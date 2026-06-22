@@ -15,7 +15,7 @@ Deploy (Render Web Service - Free):
 - Build Command : pip install -r requirements.txt
 - Start Command : python bot.py
 - Environment   : BOT_TOKEN = <ከ @BotFather የተገኘው token>
-(RENDER_EXTERNAL_URL ራሱ Render በራስ-ሰር ይሞላዋል - እጅ መንካት አያስፈልግም)
+(RENDER_EXTERNAL_URL ራሱ Render በራስ-ሰር የሚሞላው - እጅ መንካት አያስፈልግም)
  
 Local ሙከራ ላይ (RENDER_EXTERNAL_URL ስለሌለ) ቦቱ በራሱ ወደ polling mode ይቀየራል።
 """
@@ -103,7 +103,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "👋 *ሰላም!*\n\n"
         "ይህ ቦት ለብዙ ነጋዴዎች የተዘጋጀ ራስ-ሰር የሽያጭ ረዳት ነው።\n\n"
-        "🛍️ ደንበኛ ከሆኑ የነጋዴው ማስፈንጠሪያ (link) ይጫኑ。\n"
+        "🛍️ ደንበኛ ከሆኑ የነጋዴው ማስፈንጠሪያ (link) ይጫኑ።\n"
         "🏪 ነጋዴ ከሆኑ /register ብለው የራስዎን ስቶር በደቂቃዎች ይክፈቱ።"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -203,7 +203,7 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"`{link}`\n\n"
         "ተጨማሪ ትዕዛዞች፡\n"
         "➕ /addproduct — ምርት ለመጨመር\n"
-        "🧾 /myorders — 트ዕዛዞችን ለማየት\n"
+        "🧾 /myorders — ትዕዛዞችን ለማየት\n"
         "🏪 /mystore — የስቶር መረጃ ለማየት"
     )
     await query.edit_message_text(text, parse_mode="Markdown")
@@ -475,7 +475,7 @@ async def main():
             REG_MORE: [CallbackQueryHandler(reg_more, pattern="^reg_more_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True,
+        per_message=False,
     )
  
     addproduct_conv = ConversationHandler(
@@ -497,7 +497,7 @@ async def main():
             CONFIRM: [CallbackQueryHandler(confirm_order, pattern="^confirm_")],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=True,
+        per_message=False,
     )
  
     app.add_handler(CommandHandler("start", start))
@@ -513,9 +513,7 @@ async def main():
     port = int(os.environ.get("PORT", 10000))
     render_url = os.environ.get("RENDER_EXTERNAL_URL")  # Render ራሱ በራስ-ሰር የሚሞላው
  
-    # Initialize the application components manually
     await app.initialize()
-    await app.create_valid_transition()
  
     if render_url:
         # ====== WEBHOOK MODE (Render Web Service ላይ) ======
@@ -529,7 +527,6 @@ async def main():
                 webhook_url=f"{render_url}/{BOT_TOKEN}",
             )
             await app.start()
-            # Keep running until interrupted
             while True:
                 await asyncio.sleep(3600)
     else:
