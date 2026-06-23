@@ -1,7 +1,7 @@
 """
 bot.py
-Multi-Tenant Telegram Shop Bot - Full Fixed Stable Code
-======================================================
+Multi-Tenant Telegram Shop Bot - Full Fixed Stable Code (Multi-Product Support)
+==============================================================================
 """
 
 import logging
@@ -54,9 +54,10 @@ def main_menu_keyboard():
     ]
     return InlineKeyboardMarkup(keyboard)
 
+# 🛠️ ከአንድ በላይ ምርትን በልዩ ሁኔታ የሚያስተናግደው ኪቦርድ
 def products_keyboard(products: dict):
     keyboard = [
-        [InlineKeyboardButton(f"{p['name']} - {p['price']} ብር", callback_data=f"prod_{key}")]
+        [InlineKeyboardButton(f"{p['name']} - {p['price']} ብር", callback_data=f"orderprod_{key}")]
         for key, p in products.items()
     ]
     keyboard.append([InlineKeyboardButton("⬅️ ተመለስ", callback_data="menu_back")])
@@ -306,7 +307,10 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if query.data == "menu_price":
-        await query.edit_message_text("📋 *የምርትና ዋጋ ዝርዝር*", reply_markup=products_keyboard(store.get("products", {})), parse_mode="Markdown")
+        # እዚህ ጋርም ምርቶቹን ማየት ብቻ ስለሆነ የድሮውን ቁልፍ መጠቀም ይቻላል
+        keyboard = [[InlineKeyboardButton(f"{p['name']} - {p['price']} ብር", callback_data=f"view_{key}")] for key, p in store.get("products", {}).items()]
+        keyboard.append([InlineKeyboardButton("⬅️ ተመለስ", callback_data="menu_back")])
+        await query.edit_message_text("📋 *የምርትና ዋጋ ዝርዝር*", reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     
     elif query.data == "menu_info":
         info_text = (
@@ -314,7 +318,7 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏪 *የሱቅ ስም:* {store.get('store_name')}\n"
             f"📞 *ስልክ ቁጥር:* {store.get('phone', 'አልተገለጸም')}\n"
             f"📍 *አድራሻ/ቦታ:* {store.get('location', 'አልተገለጸም')}\n\n"
-            "ሸቀጦችን ለመግዛት '🛒 ትዕዛዝ ማድረግ' የሚለውን ቁልፍ ይጠቀሙ።"
+            "ሸቀጦችን ለመግዛት '🛒 ትዕዛዝ ማድረግ' የሚለውን ቁልፍ ይጠቀሙ।"
         )
         keyboard = [[InlineKeyboardButton("⬅️ ተመለስ", callback_data="menu_back")]]
         await query.edit_message_text(info_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
@@ -350,11 +354,12 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.message.reply_text("⚠️ የሱቅ መረጃ ጠፍቷል። እባክዎን /start ብለው እንደገና ይሞክሩ።")
         return ConversationHandler.END
         
-    product_key = query.data.replace("prod_", "")
+    # 🛠️ ከአንድ በላይ ምርት በሚኖርበት ጊዜ ልዩነቱን የሚለይበት አዲሱ መስመር
+    product_key = query.data.replace("orderprod_", "")
     product = store.get("products", {}).get(product_key)
     
     if not product:
-        await query.message.reply_text("⚠️ ምርቱ አልተገኘም።")
+        await query.message.reply_text("⚠️ ምርቱ አልተገኘም። እባክዎን እንደገና ይሞክሩ።")
         return ConversationHandler.END
     
     context.user_data["order"]["product"] = product["name"]
@@ -445,7 +450,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 ጠቅላላ ክፍያ: *{order['price']} ብር*\n\n"
         f"👇 እባክዎን በሚከተለው የነጋዴው አካውንት ይክፈሉ፡\n"
         f"💳 *የክፍያ አማራጭ:* `{payment_method_info}`\n\n"
-        f"...ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
+        f"ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
     )
 
     pay_keyboard = [
@@ -514,10 +519,11 @@ async def main():
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 
+    # 🛠️ የተስተካከለው የትዕዛዝ መቀበያ ክፍል (orderprod_ ንድፍን ይከተላል)
     order_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(order_start, pattern="^menu_order$")],
         states={
-            SELECT_PRODUCT: [CallbackQueryHandler(select_product, pattern="^(prod_|menu_back)")],
+            SELECT_PRODUCT: [CallbackQueryHandler(select_product, pattern="^(orderprod_|menu_back)")],
             GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
             GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
             GET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_address)],
