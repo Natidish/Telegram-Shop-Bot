@@ -1,6 +1,7 @@
 """
 bot.py
-Multi-Tenant Telegram Shop Bot - With Product Photo & Description Support
+Multi-Tenant Telegram Shop Bot - Full Fixed Stable Code
+======================================================
 """
 
 import logging
@@ -218,7 +219,7 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(text, parse_mode="Markdown")
     return ConversationHandler.END
 
-# ====================== PRODUCT MANAGEMENT (WITH PHOTO) ======================
+# ====================== PRODUCT MANAGEMENT ======================
 async def addproduct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_store = storage.get_store_by_owner(update.effective_user.id)
     if not owner_store: return ConversationHandler.END
@@ -254,7 +255,6 @@ async def addproduct_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     price = context.user_data.pop("addprod_price")
     photo = context.user_data.pop("addprod_photo")
     
-    # storage.py ውስጥ አዲሶቹን ሜዳዎች ለመደገፍ፡ map የተደረገ ዳታ ማስተላለፍ
     store = storage.get_store(store_id)
     products = store.get("products", {})
     key = f"p{len(products) + 1}"
@@ -294,7 +294,7 @@ async def myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines = [f"🛍️ {o['product']} - {o['price']} ብር\n👤 {o['name']} | {o['phone']}\n📍 {o['address']}" for o in orders]
     await update.message.reply_text("\n\n".join(lines))
 
-# ====================== ℹ️ MENU & INFO HANDLER ======================
+# ====================== MENU & INFO HANDLER ======================
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -322,23 +322,44 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "menu_back":
         await query.edit_message_text("ከታች ካሉት አማራጮች ይምረጡ 👇", reply_markup=main_menu_keyboard())
 
-# ====================== CLIENT ORDER FLOW (SHOW PHOTO & DESC) ======================
+# ====================== FIXED CLIENT ORDER FLOW ======================
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    store = storage.get_store(context.user_data.get("store_id"))
+    
+    store_id = context.user_data.get("store_id")
+    if not store_id and "order" in context.user_data:
+        store_id = context.user_data["order"].get("store_id")
+        
+    store = storage.get_store(store_id)
+    if not store:
+        await query.edit_message_text("⚠️ የሱቅ መረጃ ማግኘት አልተቻለም። እባክዎን /start ብለው እንደገና ይጀምሩ።")
+        return ConversationHandler.END
+
+    context.user_data["order"] = {"store_id": store_id}
     await query.edit_message_text("🛒 የትኛውን ምርት ይፈልጋሉ?", reply_markup=products_keyboard(store.get("products", {})))
     return SELECT_PRODUCT
 
 async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    store_id = context.user_data.get("store_id")
+    
+    store_id = context.user_data.get("store_id") or context.user_data.get("order", {}).get("store_id")
     store = storage.get_store(store_id)
+    if not store:
+        await query.message.reply_text("⚠️ የሱቅ መረጃ ጠፍቷል። እባክዎን /start ብለው እንደገና ይሞክሩ።")
+        return ConversationHandler.END
+        
     product_key = query.data.replace("prod_", "")
     product = store.get("products", {}).get(product_key)
     
-    context.user_data["order"] = {"store_id": store_id, "product": product["name"], "price": product["price"]}
+    if not product:
+        await query.message.reply_text("⚠️ ምርቱ አልተገኘም።")
+        return ConversationHandler.END
+    
+    context.user_data["order"]["product"] = product["name"]
+    context.user_data["order"]["price"] = product["price"]
+    context.user_data["order"]["store_id"] = store_id
     
     prod_details = (
         f"📦 *የምርት ስም:* {product['name']}\n"
@@ -347,12 +368,9 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ይህንን ምርት ለመግዛት ስምዎን በቴክስት ይላኩ 👇"
     )
     
-    # 🛠️ የተስተካከለው ክፍል፦ Conversation እንዳይቋረጥ ሜሴጁን አናጠፋውም!
     if product.get("photo"):
-        # ፎቶ ካለው አዲስ ሜሴጅ በፎቶ እንልካለን
         await context.bot.send_photo(chat_id=query.message.chat_id, photo=product["photo"], caption=prod_details, parse_mode="Markdown")
     else:
-        # ፎቶ ከሌለው የድሮውን ሜሴጅ ኤዲት እናደርጋለን
         await query.edit_message_text(text=prod_details, parse_mode="Markdown")
         
     return GET_NAME
@@ -366,46 +384,6 @@ async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["phone"] = update.message.text
     await update.message.reply_text("📍 እቃው የሚረከቡበትን ሙሉ አድራሻ ይፃፉ:")
     return GET_ADDRESS
-
-async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["order"]["address"] = update.message.text
-    order = context.user_data["order"]
-    summary = f"📦 *ትዕዛዝ ማረጋገጫ*\n\n🛍️ ምርት: {order['product']}\n💵 ዋጋ: {order['price']} ብር\n👤 ስም: {order['name']}\n📞 ስልክ: {order['phone']}\n📍 አድራሻ: {order['address']}\n\nትክክል ነው?"
-    keyboard = [[InlineKeyboardButton("✅ አረጋግጥ", callback_data="confirm_yes")], [InlineKeyboardButton("❌ ሰርዝ", callback_data="confirm_no")]]
-    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-    return CONFIRM
-
-async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    
-    # ሱቅ መለያውን በትክክል ከ user_data እንወስዳለን
-    store_id = context.user_data.get("store_id")
-    store = storage.get_store(store_id)
-    
-    product_key = query.data.replace("prod_", "")
-    product = store.get("products", {}).get(product_key)
-    
-    # እዚህ ጋር store_id ሁልጊዜ በ order ውስጥ እንዲቀመጥ እናደርጋለን!
-    context.user_data["order"] = {
-        "store_id": store_id, 
-        "product": product["name"], 
-        "price": product["price"]
-    }
-    
-    prod_details = (
-        f"📦 *የምርት ስም:* {product['name']}\n"
-        f"💵 *ዋጋ:* {product['price']} ብር\n"
-        f"📝 *መግለጫ:* {product.get('description', 'ምንም መግለጫ የለውም።')}\n\n"
-        "ይህንን ምርት ለመግዛት ስምዎን በቴክስት ይላኩ 👇"
-    )
-    
-    if product.get("photo"):
-        await context.bot.send_photo(chat_id=query.message.chat_id, photo=product["photo"], caption=prod_details, parse_mode="Markdown")
-    else:
-        await query.edit_message_text(text=prod_details, parse_mode="Markdown")
-        
-    return GET_NAME
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["address"] = update.message.text
@@ -432,19 +410,18 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
 
     if query.data == "confirm_no":
-        await query.message.reply_text("❌ TR ትዕዛዙ ተሰርዟል። /start ብለው መጀመር ይችላሉ።")
+        await query.message.reply_text("❌ ትዕዛዙ ተሰርዟል። /start ብለው መጀመር ይችላሉ።")
         return ConversationHandler.END
 
     order = context.user_data["order"]
     order["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     
-    # ሱቁን ከ order['store_id'] ላይ ቀጥታ እንፈልገዋለን
     store_id = order.get("store_id")
     store = storage.get_store(store_id)
     
     storage.save_order(order)
 
-    # 🚨 1. ለነጋዴው ፈጣን TEXT መላክ (አሁን ይሰራል!)
+    # 🚨 1. ለነጋዴው ፈጣን TEXT መላክ
     if store and "owner_id" in store:
         owner_text = (
             f"🔔 *አዲስ ትዕዛዝ ደርሶዎታል!*\n\n"
@@ -460,7 +437,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             logger.error(f"ለነጋዴው መልእክት መላክ አልተቻለም: {e}")
 
-    # 🚨 2. ለደንበኛው የባንክ አካውንቱን ቁጥር ማሳየት (አሁን ይሰራል!)
+    # 🚨 2. ለደንበኛው የባንክ አካውንቱን ቁጥር ማሳየት
     payment_method_info = store.get('payment_method', 'የባንክ አካውንት አልተገለጸም') if store else 'የባንክ አካውንት አልተገለጸም'
     
     payment_instruction = (
@@ -468,7 +445,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"💵 ጠቅላላ ክፍያ: *{order['price']} ብር*\n\n"
         f"👇 እባክዎን በሚከተለው የነጋዴው አካውንት ይክፈሉ፡\n"
         f"💳 *የክፍያ አማራጭ:* `{payment_method_info}`\n\n"
-        f"ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
+        f"...ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
     )
 
     pay_keyboard = [
