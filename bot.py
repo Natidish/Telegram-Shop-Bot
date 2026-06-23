@@ -1,13 +1,12 @@
 """
 bot.py
-Multi-Tenant Telegram Shop Bot with Chapa, Telegram Stars & Subscriptions
-========================================================================
+Multi-Tenant Telegram Shop Bot with Merchant Custom Accounts & Telegram Stars
+=============================================================================
 """
 
 import logging
 import os
 import asyncio
-import requests
 from datetime import datetime, timedelta
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update, LabeledPrice
@@ -26,58 +25,24 @@ import storage
 
 # ====================== CONFIG ======================
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
-# Chapa የሙከра Sandbox ቁልፍ (የእርስዎ አካውንት እስኪከፈት የሚሰራ)
-CHAPA_SECRET_KEY = os.environ.get("CHAPA_SECRET_KEY", "CHASECK_TEST-111111111111111111111111")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
 # Conversation states
 SELECT_PRODUCT, GET_NAME, GET_PHONE, GET_ADDRESS, CONFIRM = range(5)
-REG_NAME, REG_PHONE, REG_LOCATION, REG_PRODUCT_NAME, REG_PRODUCT_PRICE, REG_MORE = range(10, 16)
+REG_NAME, REG_PHONE, REG_LOCATION, REG_PAYMENT_METHOD, REG_PRODUCT_NAME, REG_PRODUCT_PRICE, REG_MORE = range(10, 17)
 ADDPROD_NAME, ADDPROD_PRICE = range(20, 22)
 
-# ====================== 💳 CHAPA INTEGRATION FUNCTION ======================
-def initialize_chapa_payment(amount, email, first_name, last_name, tx_ref, bot_username):
-    """ከቻፓ API ጋር በመገናኘት የመክፈያ ሊንክ ያመጣል"""
-    url = "https://api.chapa.co/v1/transaction/initialize"
-    headers = {
-        "Authorization": f"Bearer {CHAPA_SECRET_KEY}",
-        "Content-Type": "application/json"
-    }
-    payload = {
-        "amount": str(amount),
-        "currency": "ETB",
-        "email": email,
-        "first_name": first_name,
-        "last_name": last_name,
-        "tx_ref": tx_ref,
-        "callback_url": f"https://t.me/{bot_username}",
-        "customization": {
-            "title": "የሱቅ ክፍያ",
-            "description": "በቴሌብር ወይም በባንክ ይክፈሉ"
-        }
-    }
-    try:
-        response = requests.post(url, json=payload, headers=headers)
-        res_data = response.json()
-        if res_data.get("status") == "success":
-            return res_data["data"]["checkout_url"]
-    except Exception as e:
-        logger.error(f"Chapa initialization error: {e}")
-    return None
-
-# ====================== 🕒 SUBSCRIPTION CHECK HARDWARE ======================
+# ====================== 🕒 SUBSCRIPTION CHECK ======================
 def is_subscription_active(store: dict) -> bool:
-    """ነጋዴው ከፍሏል ወይስ አልከፈለም? (30 ቀን ይፈትሻል)"""
-    # በዳታቤዝዎ ውስጥ የተመዘገበበት ቀን ከሌለ ዛሬን አድርገህ ውሰደው
+    """የነጋዴው የ 500 ብር ወርሃዊ ክፍያ አለማለቁን ያረጋግጣል"""
     reg_date_str = store.get("registration_date", datetime.now().strftime("%Y-%m-%d"))
     try:
         reg_date = datetime.strptime(reg_date_str, "%Y-%m-%d")
     except ValueError:
         reg_date = datetime.now()
         
-    # የ 30 ቀን ገደብ (ነጋዴው ከፍሎ ከሆነ ይህ ቀን ወደፊት ሊራዘም ይችላል)
     expiry_date = reg_date + timedelta(days=30)
     return datetime.now() < expiry_date
 
@@ -92,7 +57,7 @@ def main_menu_keyboard():
 
 def products_keyboard(products: dict):
     keyboard = [
-        [InlineKeyboardButton(f"{p['name']} - {p['price']} ብር", callback_data=f"prod_{key}")]
+        [InlineKeyboardButton(f"{p['name']} - {p['price']} ብр", callback_data=f"prod_{key}")]
         for key, p in products.items()
     ]
     keyboard.append([InlineKeyboardButton("⬅️ ተመለስ", callback_data="menu_back")])
@@ -102,7 +67,7 @@ def products_keyboard(products: dict):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     args = context.args
 
-    # CASE 1: ደንበኛ መጣ
+    # CASE 1: ደንበኛ ሲመጣ
     if args:
         store_id = args[0]
         store = storage.get_store(store_id)
@@ -110,7 +75,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("⚠️ ይህ የስቶር ማስፈንጠሪያ (link) ትክክል አይደለም።")
             return
             
-        # 🚨 የነጋዴው ክፍያ መፈተሻ መስመር
+        # የ 500 ብር ክፍያ ካለቀ ሱቁን መዝጋት
         if not is_subscription_active(store):
             await update.message.reply_text("⚠️ ይቅርታ፣ ይህ ሱቅ ለጊዜው አገልግሎት አያቀረብም። (Subscription Expired)")
             return
@@ -120,17 +85,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
         return
 
-    # CASE 2: ነጋዴ መጣ
+    # CASE 2: ነጋዴ ሲመጣ
     owner_store = storage.get_store_by_owner(update.effective_user.id)
     if owner_store:
         store_id, store = owner_store
-        
-        # የደንበኝነት ሁኔታን ማሳያ
         status_text = "🟢 ንቁ (Active)" if is_subscription_active(store) else "🔴 የተዘጋ (Expired - እባክዎን 500 ብር ይክፈሉ)"
         
         await update.message.reply_text(
             f"👋 እንደገና በደህና መጡ፣ የ*{store['store_name']}* አስተዳዳሪ!\n"
-            f"📌 የቦት ሁኔታ: {status_text}\n\n"
+            f"📌 የቦት ሁኔታ: {status_text}\n"
+            f"💳 የክፍያ አካውንትዎ: {store.get('payment_method', 'አልተመዘገበም')}\n\n"
             "🏪 /mystore — የስቶርዎ መረጃ + link\n"
             "➕ /addproduct — ምርት ለመጨመር\n"
             "➖ /removeproduct — ምርት ለማስወገድ\n"
@@ -139,12 +103,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # CASE 3: አዲስ ሰው
+    # CASE 3: አዲስ ነጋዴ
     text = (
         "👋 *ሰላም!*\n\n"
-        "ይህ ቦት ለብዙ ነጋዴዎች የተዘጋጀ ራስ-ሰር የሽያጭ ረዳት ነው።\n\n"
-        "🛍️ ደንበኛ ከሆኑ የነጋዴው ማስፈንጠሪያ (link) ይጫኑ።\n"
-        "🏪 ነጋዴ ከሆኑ /register ብለው የራስዎን ስቶር በደቂቃዎች ይክፈቱ።\n"
+        "ይህ ቦት የራስዎን ሱቅ በቴሌግራም ላይ ለመክፈት የሚያስችል ነው።\n\n"
+        "🏪 ነጋዴ ከሆኑ /register ብለው የራሶን ስቶር በደቂቃዎች ይክፈቱ።\n"
         "⚠️ ማሳሰቢያ፡ ለቦት ባለቤቱ በየወሩ 500 ብር ክፍያ አለው።"
     )
     await update.message.reply_text(text, parse_mode="Markdown")
@@ -161,7 +124,7 @@ async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     context.user_data["new_store"] = {"products": {}}
-    await update.message.reply_text("🏪 *ስቶርዎን እንክፍት!*\n\nየስቶርዎን ስም ይፃፉ (ለምሳሌ፡ ሀበሻ ስቶር):", parse_mode="Markdown")
+    await update.message.reply_text("🏪 *ስቶርዎን እንክፍት!*\n\nየ can ሱቅዎን ስም ይፃፉ (ለምሳሌ፡ ኤልሳ ስቶር):", parse_mode="Markdown")
     return REG_NAME
 
 async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -176,12 +139,24 @@ async def reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_store"]["location"] = update.message.text
+    
+    instruction = (
+        "💳 *የመክፈያ አካውንትዎን ያስገቡ*\n\n"
+        "ደንበኞች እቃ ሲገዙ ብሩን የሚያስተላልፉበትን አካውንት እዚህ ይፃፉ።\n"
+        "የንግድ ባንክ፣ የቴሌብር ቁጥር ወይም ሌላ የሚጠቀሙበትን በግልፅ ያስቀምጡ።\n\n"
+        "ለምሳሌ፦ `የንግድ ባንክ: 1000xxxxxxxxx (አልማዝ አበበ) ወይም ቴሌብር: 09xxxxxxxx`"
+    )
+    await update.message.reply_text(instruction, parse_mode="Markdown")
+    return REG_PAYMENT_METHOD
+
+async def reg_payment_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_store"]["payment_method"] = update.message.text
     await update.message.reply_text("📦 *የመጀመሪያ ምርትዎን ይጨምሩ*\n\nየምርቱን ስም ይፃፉ (ለምሳሌ፡ 👟 ጫማ):", parse_mode="Markdown")
     return REG_PRODUCT_NAME
 
 async def reg_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["temp_product_name"] = update.message.text
-    await update.message.reply_text("💵 ዋጋውን በቁጥር ብቻ ይፃፉ (ለምሳሌ፡ 1200):")
+    await update.message.reply_text("💵 ዋጋውን በቁጥር ብቻ ይፃፉ (ለምሳሌ፡ 1500):")
     return REG_PRODUCT_PRICE
 
 async def reg_product_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -215,7 +190,7 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     store_id = f"store_{owner_id}"
     store_data = context.user_data.pop("new_store")
     store_data["owner_id"] = owner_id
-    store_data["registration_date"] = datetime.now().strftime("%Y-%m-%d") # የዛሬ ቀን ይያዛል
+    store_data["registration_date"] = datetime.now().strftime("%Y-%m-%d")
     storage.save_store(store_id, store_data)
 
     bot_username = (await context.bot.get_me()).username
@@ -224,20 +199,18 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "🎉 *ስቶርዎ በተሳካ ሁኔታ ተከፍቷል!*\n\n"
         f"🏪 ስም: {store_data['store_name']}\n"
-        f"📦 ምርቶች: {len(store_data['products'])}\n"
-        "⏰ የ 30 ቀን ነፃ የሙከራ ጊዜ ተሰጥቶዎታል።\n\n"
-        "ይህን ማስፈንጠሪያ (link) ለደንበኞችዎ ያጋሩ፡\n"
+        f"💳 አካውንት: {store_data['payment_method']}\n"
+        "⏰ የ 30 ቀን የሙከራ ጊዜ ተጀምሯል።\n\n"
+        "ይህን ሊንክ ለደንበኞችዎ ያጋሩ፡\n"
         f"`{link}`"
     )
     await query.edit_message_text(text, parse_mode="Markdown")
     return ConversationHandler.END
 
-# ====================== ምርት መጨመር እና ማስወገድ (አልተለወጠም) ======================
+# ====================== ምርት ማስተዳደሪያዎች (አልተለወጡም) ======================
 async def addproduct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_store = storage.get_store_by_owner(update.effective_user.id)
-    if not owner_store:
-        await update.message.reply_text("⚠️ የተመዘገበ ስቶር የለዎትም። /register ብለው ይክፈቱ።")
-        return ConversationHandler.END
+    if not owner_store: return ConversationHandler.END
     context.user_data["addprod_store_id"] = owner_store[0]
     await update.message.reply_text("📦 የምርቱን ስም ይፃፉ:")
     return ADDPROD_NAME
@@ -248,25 +221,19 @@ async def addproduct_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ADDPROD_PRICE
 
 async def addproduct_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        price = int(update.message.text.strip())
-    except ValueError:
-        await update.message.reply_text("⚠️ በቁጥር ብቻ ይፃፉ:")
-        return ADDPROD_PRICE
+    try: price = int(update.message.text.strip())
+    except ValueError: return ADDPROD_PRICE
     store_id = context.user_data.pop("addprod_store_id")
     name = context.user_data.pop("addprod_name")
-    store = storage.get_store(store_id)
-    key = f"p{len(store.get('products', {})) + 1}"
-    storage.add_product(store_id, key, name, price)
-    await update.message.reply_text(f"✅ {name} - {price} ብር ተጨምሯል!")
+    storage.add_product(store_id, f"p{len(storage.get_store(store_id).get('products', {}))+1}", name, price)
+    await update.message.reply_text(f"✅ {name} ተጨምሯል!")
     return ConversationHandler.END
 
 async def removeproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_store = storage.get_store_by_owner(update.effective_user.id)
     if not owner_store: return
     store_id, store = owner_store
-    products = store.get("products", {})
-    keyboard = [[InlineKeyboardButton(f"❌ {p['name']}", callback_data=f"delprod|{store_id}|{key}")] for key, p in products.items()]
+    keyboard = [[InlineKeyboardButton(f"❌ {p['name']}", callback_data=f"delprod|{store_id}|{key}")] for key, p in store.get("products", {}).items()]
     await update.message.reply_text("የሚያስወግዱትን ምርት ይምረጡ:", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def removeproduct_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -279,37 +246,31 @@ async def removeproduct_callback(update: Update, context: ContextTypes.DEFAULT_T
 async def mystore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_store = storage.get_store_by_owner(update.effective_user.id)
     if not owner_store: return
-    store_id, store = owner_store
     bot_username = (await context.bot.get_me()).username
-    link = f"https://t.me/{bot_username}?start={store_id}"
-    await update.message.reply_text(f"🏪 *{store['store_name']}*\n🔗 ሊንክ: `{link}`", parse_mode="Markdown")
+    await update.message.reply_text(f"🏪 *{owner_store[1]['store_name']}*\n🔗 ሊንክ: `https://t.me/{bot_username}?start={owner_store[0]}`", parse_mode="Markdown")
 
 async def myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     owner_store = storage.get_store_by_owner(update.effective_user.id)
     if not owner_store: return
     orders = storage.get_orders_for_store(owner_store[0], limit=10)
-    if not orders:
-        await update.message.reply_text("📭 እስካሁን ምንም ትዕዛዝ የለም።")
-        return
-    lines = [f"🛍️ {o['product']} - {o['price']} ብር\n👤 {o['name']} | {o['phone']}" for o in orders]
+    if not orders: return await update.message.reply_text("📭 እስካሁን ምንም ትዕዛዝ የለም።")
+    lines = [f"🛍️ {o['product']} - {o['price']} ብር\n👤 {o['name']} | {o['phone']}\n📍 {o['address']}" for o in orders]
     await update.message.reply_text("\n\n".join(lines))
 
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    store_id = context.user_data.get("store_id")
-    store = storage.get_store(store_id) if store_id else None
+    store = storage.get_store(context.user_data.get("store_id"))
     if query.data == "menu_price" and store:
         await query.edit_message_text("📋 *የምርት ዝርዝር*", reply_markup=products_keyboard(store.get("products", {})), parse_mode="Markdown")
     elif query.data == "menu_back":
         await query.edit_message_text("ከታች ካሉት አማራጮች ይምረጡ 👇", reply_markup=main_menu_keyboard())
 
-# ====================== ደንበኛ ORDER FLOW + 💳 PAYMENTS ======================
+# ====================== ደንበኛ ORDER FLOW & INSTANT TEXT ======================
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    store_id = context.user_data.get("store_id")
-    store = storage.get_store(store_id)
+    store = storage.get_store(context.user_data.get("store_id"))
     await query.edit_message_text("🛒 የትኛውን ምርት ይፈልጋሉ?", reply_markup=products_keyboard(store.get("products", {})))
     return SELECT_PRODUCT
 
@@ -318,9 +279,7 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     store_id = context.user_data.get("store_id")
     store = storage.get_store(store_id)
-    product_key = query.data.replace("prod_", "")
-    product = store.get("products", {}).get(product_key)
-    
+    product = store.get("products", {}).get(query.data.replace("prod_", ""))
     context.user_data["order"] = {"store_id": store_id, "product": product["name"], "price": product["price"]}
     await query.edit_message_text(f"✅ {product['name']} ተመርጧል።\n\nእስኪ ስምዎን ይፃፉ:")
     return GET_NAME
@@ -332,22 +291,13 @@ async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["phone"] = update.message.text
-    await update.message.reply_text("📍 አድራሻዎን/የመረክቢያ ቦታ ይፃፉ:")
+    await update.message.reply_text("📍 አድራሻዎን ይፃፉ:")
     return GET_ADDRESS
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["order"]["address"] = update.message.text
     order = context.user_data["order"]
-    order["address"] = update.message.text
-
-    summary = (
-        "📦 *ትዕዛዝ ማረጋገጫ*\n\n"
-        f"🛍️ ምርት: {order['product']}\n"
-        f"💵 ዋጋ: {order['price']} ብር\n"
-        f"👤 ስም: {order['name']}\n"
-        f"📞 ስልክ: {order['phone']}\n"
-        f"📍 አድራሻ: {order['address']}\n\n"
-        "ትክክል ነው?"
-    )
+    summary = f"📦 *ትዕዛዝ ማረጋገጫ*\n\n🛍️ ምርት: {order['product']}\n💵 ዋጋ: {order['price']} ብር\n👤 ስም: {order['name']}\n📞 ስልክ: {order['phone']}\n📍 አድራሻ: {order['address']}\n\nትክክል ነው?"
     keyboard = [[InlineKeyboardButton("✅ አረጋግጥ", callback_data="confirm_yes")], [InlineKeyboardButton("❌ ሰርዝ", callback_data="confirm_no")]]
     await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     return CONFIRM
@@ -364,65 +314,55 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     order["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
     storage.save_order(order)
 
-    # 🚨 1. ክፍያ ሳይጠናቀቅ በፊት ለነጋዴው ቀድሞ ቴክስት መላክ!
     store = storage.get_store(order["store_id"])
+    
+    # 🚨 1. ለነጋዴው ወዲያውኑ የደንበኛውን ሙሉ መረጃ የያዘ TEXT መላክ!
     if store:
         owner_text = (
-            "🔔 *ቅድመ-ትዕዛዝ መጣ! (ክፍያ እየጠበቀ ነው)*\n\n"
+            "🔔 *አዲስ ትዕዛዝ ደርሶዎታል! (ክፍያ እየጠበቀ ነው)*\n\n"
             f"🛍️ ምርት: {order['product']}\n"
             f"💵 ዋጋ: {order['price']} ብር\n"
-            f"👤 ስም: {order['name']}\n"
+            f"👤 የደንበኛ ስም: {order['name']}\n"
             f"📞 ስልክ: {order['phone']}\n"
-            f"📍 አድራሻ: {order['address']}"
+            f"📍 አድራሻ: {order['address']}\n\n"
+            "⚠️ ደንበኛው ክፍያውን በባንክ ፈጽሞ ደረሰኝ እስኪልክልዎ ወይም በStars እስኪከፍል ይጠብቁ።"
         )
         await context.bot.send_message(chat_id=store["owner_id"], text=owner_text, parse_mode="Markdown")
 
-    # 🚨 2. የ Chapa ሊንክ ማመንጨት
-    bot_username = (await context.bot.get_me()).username
-    tx_ref = f"tx_{query.from_user.id}_{int(datetime.now().timestamp())}"
-    chapa_url = initialize_chapa_payment(
-        amount=order["price"],
-        email="customer@gmail.com",
-        first_name=order["name"],
-        last_name="Customer",
-        tx_ref=tx_ref,
-        bot_username=bot_username
+    # 🚨 2. ለደንበኛው የነጋዴውን የክፍያ አማራጭ ማሳየት
+    payment_instruction = (
+        "🎉 *ትዕዛዝዎ በተሳካ ሁኔታ ተመዝግቧል!*\n\n"
+        f"💵 ጠቅላላ ዋጋ: *{order['price']} ብር*\n\n"
+        "👇 እባክዎን በፈለጉት አማራጭ ይክፈሉ፡\n"
+        f"ℹ️ *የነጋዴው አካውንት፡* {store.get('payment_method', 'ባንክ አልተገለጸም')}\n\n"
+        "ባንክ ከተጠቀሙ ብሩን አስተላልፈው ደረሰኙን ለነጋዴው በውስጥ መስመር ይላኩ።"
     )
 
-    # 🚨 3. የክፍያ ቁልፎችን ለደንበኛው ማሳየት (Chapa እና Telegram Stars)
-    pay_keyboard = []
-    if chapa_url:
-        pay_keyboard.append([InlineKeyboardButton("💳 በቴሌብር / ባንክ ክፈል (Chapa)", url=chapa_url)])
-    pay_keyboard.append([InlineKeyboardButton("⭐ በ Telegram Stars ክፈል", callback_data=f"star_pay_{order['price']}")])
+    pay_keyboard = [
+        [InlineKeyboardButton("⭐ በ Telegram Stars ክፈል", callback_data=f"star_pay_{order['price']}")]
+    ]
 
-    await query.edit_message_text(
-        "✅ ትዕዛዝዎ ተመዝግቧል! እባክዎን ከታች ባሉት አማራጮች ክፍያውን ይፈጽሙ። ክፍያዎ ሲጠናቀቅ ለሻጩ መልእክት ይደርሰዋል።",
-        reply_markup=InlineKeyboardMarkup(pay_keyboard)
-    )
+    await query.edit_message_text(payment_instruction, reply_markup=InlineKeyboardMarkup(pay_keyboard), parse_mode="Markdown")
     return ConversationHandler.END
 
 # ====================== 🌟 TELEGRAM STARS PAYMENT HANDLERS ======================
 async def star_payment_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """የቴሌግራም ስታርስ ኢንቮይስ ማቅረቢያ"""
     query = update.callback_query
     await query.answer()
-    
     price = int(query.data.split("_")[-1])
-    # 1 ስታር በግምት ከኢትዮጵያ ብር ጋር ለማመጣጠን (ለምሳሌ 1 ስታር = 2 ብር ቢሆን፣ ዋጋውን ለ 2 ማካፈል)
-    stars_amount = max(1, price // 2) 
+    stars_amount = max(1, price // 2) # 1 ስታር = 2 ብር በሚል ስሌት
     
     await context.bot.send_invoice(
         chat_id=query.message.chat_id,
-        title="ለእቃው ክፍያ",
+        title="የእቃ ክፍያ",
         description="በቴሌግራም ስታርስ ክፍያዎን ይፈጽሙ",
         payload="store_product_payment",
-        provider_token="", # ለTelegram Stars ባዶ ይሆናል
+        provider_token="",
         currency="XTR",
         prices=[LabeledPrice("ዋጋ", stars_amount)]
     )
 
 async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ቴሌግራም ክፍያውን ከመቀበሉ በፊት ስኬታማ መሆኑን ማረጋገጫ"""
     query = update.pre_checkout_query
     if query.invoice_payload != "store_product_payment":
         await query.answer(ok=False, error_message="የክፍያ ስህተት ተፈጥሯል።")
@@ -430,14 +370,10 @@ async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         await query.answer(ok=True)
 
 async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """ክፍያው ሙሉ በሙሉ ሲጠናቀቅ የሚሰራ"""
     await update.message.reply_text("🎉 ክፍያዎ በ Telegram Stars በተሳካ ሁኔታ ተጠናቋል! እናመሰግናለን። 🙏")
 
 # ====================== MAIN ======================
 async def main():
-    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
-        raise RuntimeError("⚠️ BOT_TOKEN አልተገኘም!")
-
     app = Application.builder().token(BOT_TOKEN).build()
 
     register_conv = ConversationHandler(
@@ -446,6 +382,7 @@ async def main():
             REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
             REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_phone)],
             REG_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_location)],
+            REG_PAYMENT_METHOD: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_payment_method)],
             REG_PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product_name)],
             REG_PRODUCT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product_price)],
             REG_MORE: [CallbackQueryHandler(reg_more, pattern="^reg_more_")],
@@ -485,8 +422,6 @@ async def main():
     app.add_handler(CommandHandler("removeproduct", removeproduct))
     app.add_handler(CallbackQueryHandler(removeproduct_callback, pattern=r"^delprod\|"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_(price|info|back)$"))
-    
-    # 🚨 የቴሌግራም ስታርስ ክፍያ መቆጣጠሪያዎች
     app.add_handler(CallbackQueryHandler(star_payment_start, pattern="^star_pay_"))
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
