@@ -340,7 +340,6 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     context.user_data["order"] = {"store_id": store_id, "product": product["name"], "price": product["price"]}
     
-    # 📸 እዚህ ጋር ለደንበኛው ፎቶውን እና ዲscriptioኑን አንድ ላይ አያይዘን እናሳያለን!
     prod_details = (
         f"📦 *የምርት ስም:* {product['name']}\n"
         f"💵 *ዋጋ:* {product['price']} ብር\n"
@@ -348,12 +347,13 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "ይህንን ምርት ለመግዛት ስምዎን በቴክስት ይላኩ 👇"
     )
     
-    # የድሮውን ሜሴጅ አጥፍተን በፎቶ እንተካዋለን (ፎቶ ካለው)
-    await query.message.delete()
+    # 🛠️ የተስተካከለው ክፍል፦ Conversation እንዳይቋረጥ ሜሴጁን አናጠፋውም!
     if product.get("photo"):
+        # ፎቶ ካለው አዲስ ሜሴጅ በፎቶ እንልካለን
         await context.bot.send_photo(chat_id=query.message.chat_id, photo=product["photo"], caption=prod_details, parse_mode="Markdown")
     else:
-        await context.bot.send_message(chat_id=query.message.chat_id, text=prod_details, parse_mode="Markdown")
+        # ፎቶ ከሌለው የድሮውን ሜሴጅ ኤዲት እናደርጋለን
+        await query.edit_message_text(text=prod_details, parse_mode="Markdown")
         
     return GET_NAME
 
