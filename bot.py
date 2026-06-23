@@ -375,40 +375,100 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
     return CONFIRM
 
+async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    # ሱቅ መለያውን በትክክል ከ user_data እንወስዳለን
+    store_id = context.user_data.get("store_id")
+    store = storage.get_store(store_id)
+    
+    product_key = query.data.replace("prod_", "")
+    product = store.get("products", {}).get(product_key)
+    
+    # እዚህ ጋር store_id ሁልጊዜ በ order ውስጥ እንዲቀመጥ እናደርጋለን!
+    context.user_data["order"] = {
+        "store_id": store_id, 
+        "product": product["name"], 
+        "price": product["price"]
+    }
+    
+    prod_details = (
+        f"📦 *የምርት ስም:* {product['name']}\n"
+        f"💵 *ዋጋ:* {product['price']} ብር\n"
+        f"📝 *መግለጫ:* {product.get('description', 'ምንም መግለጫ የለውም።')}\n\n"
+        "ይህንን ምርት ለመግዛት ስምዎን በቴክስት ይላኩ 👇"
+    )
+    
+    if product.get("photo"):
+        await context.bot.send_photo(chat_id=query.message.chat_id, photo=product["photo"], caption=prod_details, parse_mode="Markdown")
+    else:
+        await query.edit_message_text(text=prod_details, parse_mode="Markdown")
+        
+    return GET_NAME
+
+async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["order"]["address"] = update.message.text
+    order = context.user_data["order"]
+    
+    summary = (
+        f"📦 *ትዕዛዝ ማረጋገጫ*\n\n"
+        f"🛍️ ምርት: {order['product']}\n"
+        f"💵 ዋጋ: {order['price']} ብር\n"
+        f"👤 ስም: {order['name']}\n"
+        f"📞 ስልክ: {order['phone']}\n"
+        f"📍 አድራሻ: {order['address']}\n\n"
+        f"ትክክል ነው?"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ አረጋግጥ", callback_data="confirm_yes")], 
+        [InlineKeyboardButton("❌ ሰርዝ", callback_data="confirm_no")]
+    ]
+    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return CONFIRM
+
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
     if query.data == "confirm_no":
-        await query.message.reply_text("❌ ትዕዛዙ ተሰርዟል። /start ብለው መጀመር ይችላሉ።")
+        await query.message.reply_text("❌ TR ትዕዛዙ ተሰርዟል። /start ብለው መጀመር ይችላሉ።")
         return ConversationHandler.END
 
     order = context.user_data["order"]
     order["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    
+    # ሱቁን ከ order['store_id'] ላይ ቀጥታ እንፈልገዋለን
+    store_id = order.get("store_id")
+    store = storage.get_store(store_id)
+    
     storage.save_order(order)
 
-    store = storage.get_store(order["store_id"])
-    
-    if store:
+    # 🚨 1. ለነጋዴው ፈጣን TEXT መላክ (አሁን ይሰራል!)
+    if store and "owner_id" in store:
         owner_text = (
-            "🔔 *አዲስ ትዕዛዝ ደርሶዎታል!*\n\n"
+            f"🔔 *አዲስ ትዕዛዝ ደርሶዎታል!*\n\n"
             f"🛍️ ምርት: {order['product']}\n"
             f"💵 ዋጋ: {order['price']} ብር\n"
             f"👤 የደንበኛ ስም: {order['name']}\n"
             f"📞 ስልክ: {order['phone']}\n"
             f"📍 አድራሻ: {order['address']}\n\n"
-            "⚠️ ደንበኛው ክፍያውን ፈጽሞ ደረሰኝ እስኪልክልዎ ወይም በStars እስኪከፍል ይጠብቁ።"
+            f"⚠️ ደንበኛው ክፍያውን በባንክ ፈጽሞ ደረሰኝ እስኪልክልዎ ወይም በStars እስኪከፍል ይጠብቁ።"
         )
-        await context.bot.send_message(chat_id=store["owner_id"], text=owner_text, parse_mode="Markdown")
+        try:
+            await context.bot.send_message(chat_id=store["owner_id"], text=owner_text, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"ለነጋዴው መልእክት መላክ አልተቻለም: {e}")
 
+    # 🚨 2. ለደንበኛው የባንክ አካውንቱን ቁጥር ማሳየት (አሁን ይሰራል!)
     payment_method_info = store.get('payment_method', 'የባንክ አካውንት አልተገለጸም') if store else 'የባንክ አካውንት አልተገለጸም'
     
     payment_instruction = (
-        "🎉 *ትዕዛዝዎ በተሳካ ሁኔታ ተመዝግቧል!*\n\n"
+        f"🎉 *ትዕዛዝዎ በተሳካ ሁኔታ ተመዝግቧል!*\n\n"
         f"💵 ጠቅላላ ክፍያ: *{order['price']} ብር*\n\n"
-        "👇 እባክዎን በሚከተለው የነጋዴው አካውንት ይክፈሉ፡\n"
+        f"👇 እባክዎን በሚከተለው የነጋዴው አካውንት ይክፈሉ፡\n"
         f"💳 *የክፍያ አማራጭ:* `{payment_method_info}`\n\n"
-        "ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
+        f"ብሩን በባንክ አፕሊኬሽን ወይም በቴሌብር ካስተላለፉ በኋላ የክፍያ ደረሰኝ (Screenshot) ለሱቁ ባለቤት ይላኩ።"
     )
 
     pay_keyboard = [
