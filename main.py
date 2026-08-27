@@ -1,4 +1,4 @@
-[8/27/2026 11:13 AM] Иαтиαєʝ ∂esta: """
+"""[8/27/2026 11:13  
 bot_enhanced.py
 Multi-Tenant Telegram Shop Bot - ENHANCED VERSION
 ======================================================
