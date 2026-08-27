@@ -1,612 +1,531 @@
-Y
 """
-DLX Multi-Downloader — main.py (unified app)
-----------------------------------------------
-ONE process, ONE port. Fixes all previous issues:
-  1. No more "python main.py && python bot.py" (two scripts race / never both run)
-  2. No more asyncio.get_event_loop() crash on Python 3.14 (we use webhook mode,
-     not run_polling — webhook mode never calls that deprecated function)
-  3. FastAPI serves your Mini App UI AND receives Telegram updates via webhook,
-     all bound to the single $PORT Render gives you.
- 
-Start command on Render should be exactly:
-    uvicorn main:app --host 0.0.0.0 --port $PORT
- 
-Required Environment Variables (Render → Settings → Environment):
-    BOT_TOKEN              - from @BotFather
-    MAIN_CHANNEL_USERNAME  - e.g. @your_channel   (force-join channel)
-    MAIN_CHANNEL_LINK      - e.g. https://t.me/your_channel
-    ADMIN_IDS              - comma separated telegram user ids, e.g. "111111,222222"
-    ADSGRAM_BLOCK_ID       - from partner.adsgram.ai (optional)
-    ADSGRAM_TOKEN          - from partner.adsgram.ai (optional)
-    RENDER_EXTERNAL_URL    - Render sets this automatically, do not set manually
+bot.py
+Multi-Tenant Telegram Shop Bot
+==============================
+ብዙ ነጋዴዎች በ1 ቦት እንዲጠቀሙ የተዘጋጀ።
+
+እንዴት ይሰራል፡
+1. ነጋዴ /register ብሎ የራሱን ስቶር (ስም፣ ስልክ፣ ቦታ፣ ምርቶች) ይከፍታል
+2. ቦቱ ለነጋዴው unique link ይሰጠዋል፡ https://t.me/BotUsername?start=store_XXXX
+3. ነጋዴው ይህን link ለደንበኞቹ ያጋራል (Telegram channel/Facebook/WhatsApp)
+4. ደንበኛ link ሲጫን ቀጥታ ወደ እርሱ ስቶር menu ይገባል፣ ምርት ይመርጣል፣ ያዛል
+5. ትዕዛዙ ለነጋዴው (owner_id) በቀጥታ Telegram notification ይደርሰዋል
+
+Deploy (Render Web Service - Free):
+- Build Command : pip install -r requirements.txt
+- Start Command : python bot.py
+- Environment   : BOT_TOKEN = <ከ @BotFather የተገኘው token>
+(RENDER_EXTERNAL_URL ራሱ Render በራስ-ሰር ይሞላዋል - እጅ መንካት አያስፈልግም)
+
+Local ሙከራ ላይ (RENDER_EXTERNAL_URL ስለሌለ) ቦቱ በራሱ ወደ polling mode ይቀየራል።
 """
- 
-import asyncio
-import json
+
 import logging
 import os
-import uuid
-from contextlib import asynccontextmanager
- 
-import httpx
-from fastapi import FastAPI, Request, Response
-from fastapi.staticfiles import StaticFiles
-from telegram import (
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-    LabeledPrice,
-    Update,
-)
-from telegram.constants import ChatMemberStatus, ParseMode
+from datetime import datetime
+
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
     Application,
-    CallbackQueryHandler,
     CommandHandler,
-    ContextTypes,
+    CallbackQueryHandler,
+    ConversationHandler,
     MessageHandler,
-    PreCheckoutQueryHandler,
+    ContextTypes,
     filters,
 )
-from yt_dlp import YoutubeDL
- 
-# ============================================================
-# ======================= CONFIGURATION =======================
-# ============================================================
- 
-BOT_TOKEN = os.environ["BOT_TOKEN"]  # required — app will fail to start without it
- 
-MAIN_CHANNEL_USERNAME = os.environ.get("MAIN_CHANNEL_USERNAME", "@your_channel")
-MAIN_CHANNEL_LINK = os.environ.get("MAIN_CHANNEL_LINK", "https://t.me/your_channel")
-ADMIN_IDS = [int(x) for x in os.environ.get("ADMIN_IDS", "").split(",") if x.strip()]
- 
-FREE_DOWNLOADS = int(os.environ.get("FREE_DOWNLOADS", "3"))
- 
-ADSGRAM_ENABLED = bool(os.environ.get("ADSGRAM_BLOCK_ID"))
-ADSGRAM_BLOCK_ID = os.environ.get("ADSGRAM_BLOCK_ID", "")
-ADSGRAM_TOKEN = os.environ.get("ADSGRAM_TOKEN", "")
-ADSGRAM_LANGUAGE = os.environ.get("ADSGRAM_LANGUAGE", "en")
-ADSGRAM_API_URL = "https://api.adsgram.ai/advbot"
-AD_DISPLAY_SECONDS = int(os.environ.get("AD_DISPLAY_SECONDS", "4"))
- 
-FALLBACK_AD_TEXT = (
-    "📢 <b>Sponsored</b>\n\nYour ad slot is empty right now.\n"
-    "Contact @your_ad_channel to advertise here."
-)
-FALLBACK_AD_BUTTON_TEXT = "🔗 Learn more"
-FALLBACK_AD_BUTTON_URL = "https://t.me/your_ad_channel"
- 
-STARS_ENABLED = True
-STARS_PRESET_AMOUNTS = [15, 50, 100, 250]
- 
-DOWNLOAD_DIR = "downloads"
-USERS_DB_FILE = "users_db.json"
-MAX_TELEGRAM_FILE_MB = 50
- 
-# Render provides this automatically on deployed services
-RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
- 
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-logger = logging.getLogger("dlx-bot")
- 
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
- 
-# ============================================================
-# ==================== SIMPLE JSON "DB" =====================
-# ============================================================
-# NOTE: Render's free-tier filesystem is EPHEMERAL — this file resets on every
-# redeploy/restart. Fine for testing; for production, migrate to a real DB
-# (Postgres — Render has a free Postgres tier) or Redis.
- 
-_db_lock = asyncio.Lock()
- 
- 
-def _load_db() -> dict:
-    if not os.path.exists(USERS_DB_FILE):
-        return {}
-    try:
-        with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, OSError):
-        return {}
- 
- 
-def _save_db(data: dict) -> None:
-    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
- 
- 
-async def get_user_record(user_id: int) -> dict:
-    async with _db_lock:
-        db = _load_db()
-        rec = db.get(str(user_id))
-        if rec is None:
-            rec = {"downloads": 0, "verified": False, "stars_donated": 0}
-            db[str(user_id)] = rec
-            _save_db(db)
-        return rec
- 
- 
-async def increment_user_downloads(user_id: int) -> int:
-    async with _db_lock:
-        db = _load_db()
-        rec = db.setdefault(str(user_id), {"downloads": 0, "verified": False, "stars_donated": 0})
-        rec["downloads"] += 1
-        _save_db(db)
-        return rec["downloads"]
- 
- 
-async def mark_verified(user_id: int) -> None:
-    async with _db_lock:
-        db = _load_db()
-        rec = db.setdefault(str(user_id), {"downloads": 0, "verified": False, "stars_donated": 0})
-        rec["verified"] = True
-        _save_db(db)
- 
- 
-async def add_stars_donation(user_id: int, amount: int) -> None:
-    async with _db_lock:
-        db = _load_db()
-        rec = db.setdefault(str(user_id), {"downloads": 0, "verified": False, "stars_donated": 0})
-        rec["stars_donated"] = rec.get("stars_donated", 0) + amount
-        _save_db(db)
- 
- 
-async def all_users_count() -> int:
-    async with _db_lock:
-        return len(_load_db())
- 
- 
-async def total_stars_donated() -> int:
-    async with _db_lock:
-        db = _load_db()
-        return sum(rec.get("stars_donated", 0) for rec in db.values())
- 
- 
-# ============================================================
-# =================== FORCE JOIN HELPERS =====================
-# ============================================================
- 
-async def is_member_of_channel(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> bool:
-    try:
-        member = await context.bot.get_chat_member(MAIN_CHANNEL_USERNAME, user_id)
-        return member.status in (
-            ChatMemberStatus.MEMBER,
-            ChatMemberStatus.ADMINISTRATOR,
-            ChatMemberStatus.OWNER,
+
+import storage
+
+# ====================== CONFIG ======================
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "YOUR_BOT_TOKEN_HERE")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+# Conversation states — እያንዳንዱ ConversationHandler የራሱ የተለየ ቁጥር አለው
+SELECT_PRODUCT, GET_NAME, GET_PHONE, GET_ADDRESS, CONFIRM = range(5)
+REG_NAME, REG_PHONE, REG_LOCATION, REG_PRODUCT_NAME, REG_PRODUCT_PRICE, REG_MORE = range(10, 16)
+ADDPROD_NAME, ADDPROD_PRICE = range(20, 22)
+
+
+# ====================== KEYBOARDS ======================
+def main_menu_keyboard():
+    keyboard = [
+        [InlineKeyboardButton("📋 ዋጋ ዝርዝር", callback_data="menu_price")],
+        [InlineKeyboardButton("🛒 ትዕዛዝ ማድረግ", callback_data="menu_order")],
+        [InlineKeyboardButton("ℹ️ መረጃ", callback_data="menu_info")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def products_keyboard(products: dict):
+    keyboard = [
+        [InlineKeyboardButton(f"{p['name']} - {p['price']} ብር", callback_data=f"prod_{key}")]
+        for key, p in products.items()
+    ]
+    keyboard.append([InlineKeyboardButton("⬅️ ተመለስ", callback_data="menu_back")])
+    return InlineKeyboardMarkup(keyboard)
+
+
+# ====================== /start (ለነጋዴ እና ለደንበኛ) ======================
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    args = context.args  # ?start=store_xxx ላይ ያለው ክፍል
+
+    # CASE 1: ደንበኛ ከነጋዴው unique link በመጫን የመጣ
+    if args:
+        store_id = args[0]
+        store = storage.get_store(store_id)
+        if not store:
+            await update.message.reply_text("⚠️ ይህ የስቶር ማስፈንጠሪያ (link) ትክክል አይደለም።")
+            return
+        context.user_data["store_id"] = store_id
+        text = f"👋 እንኳን ወደ *{store['store_name']}* በደህና መጡ!\n\nከታች ካሉት አማራጮች ይምረጡ 👇"
+        await update.message.reply_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+        return
+
+    # CASE 2: ቦቱን በቀጥታ የከፈተ ነጋዴ (የራሱ ስቶር ካለው)
+    owner_store = storage.get_store_by_owner(update.effective_user.id)
+    if owner_store:
+        _, store = owner_store
+        await update.message.reply_text(
+            f"👋 እንደገና በደህና መጡ፣ የ*{store['store_name']}* አስተዳዳሪ!\n\n"
+            "🏪 /mystore — የስቶርዎ መረጃ + link\n"
+            "➕ /addproduct — ምርት ለመጨመር\n"
+            "➖ /removeproduct — ምርት ለማስወገድ\n"
+            "🧾 /myorders — የቅርብ ጊዜ ትዕዛዞች",
+            parse_mode="Markdown",
         )
-    except Exception as e:
-        logger.warning("Membership check failed for %s: %s", user_id, e)
-        return False
- 
- 
-def join_required_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton("➡️ Join Channel", url=MAIN_CHANNEL_LINK)],
-            [InlineKeyboardButton("✅ I Joined - Try Again", callback_data="check_join")],
-        ]
-    )
- 
- 
-async def enforce_join_if_needed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-    user_id = update.effective_user.id
-    rec = await get_user_record(user_id)
- 
-    if rec["downloads"] < FREE_DOWNLOADS or rec.get("verified"):
-        return True
- 
-    if await is_member_of_channel(context, user_id):
-        await mark_verified(user_id)
-        return True
- 
-    text = (
-        "🚫 <b>ነጻ ማውረጃ አልቋል!</b>\n\n"
-        f"ያለክፍያ የሚፈቀደው {FREE_DOWNLOADS} ማውረድ ተጠናቋል።\n"
-        "ቦቱን መጠቀም እንድትቀጥል የቻናላችንን አባል ሁን፣ ከዛ <b>✅ I Joined</b> ን ተጫን።"
-    )
-    await update.effective_message.reply_text(
-        text, parse_mode=ParseMode.HTML, reply_markup=join_required_keyboard()
-    )
-    return False
- 
- 
-# ============================================================
-# ======================= ADSGRAM AD ==========================
-# ============================================================
- 
-async def fetch_adsgram_ad(tgid: int) -> dict | None:
-    if not ADSGRAM_ENABLED:
-        return None
-    params = {
-        "tgid": tgid,
-        "blockid": ADSGRAM_BLOCK_ID,
-        "language": ADSGRAM_LANGUAGE,
-        "token": ADSGRAM_TOKEN,
-    }
-    try:
-        async with httpx.AsyncClient(timeout=6) as client:
-            resp = await client.get(ADSGRAM_API_URL, params=params)
-            if resp.status_code != 200:
-                return None
-            data = resp.json()
-            if not data.get("text_html"):
-                return None
-            return data
-    except Exception as e:
-        logger.warning("AdsGram request failed: %s", e)
-        return None
- 
- 
-async def show_ad(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user_id: int):
-    ad = await fetch_adsgram_ad(user_id)
- 
-    if ad:
-        buttons = [[InlineKeyboardButton(ad["button_name"], url=ad["click_url"])]]
-        if ad.get("reward_url") and ad.get("button_reward_name"):
-            buttons.append(
-                [InlineKeyboardButton(ad["button_reward_name"], url=ad["reward_url"])]
-            )
-        try:
-            if ad.get("image_url"):
-                msg = await context.bot.send_photo(
-                    chat_id=chat_id,
-                    photo=ad["image_url"],
-                    caption=ad["text_html"],
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    protect_content=True,
-                )
-            else:
-                msg = await context.bot.send_message(
-                    chat_id=chat_id,
-                    text=ad["text_html"],
-                    parse_mode=ParseMode.HTML,
-                    reply_markup=InlineKeyboardMarkup(buttons),
-                    protect_content=True,
-                )
-        except Exception as e:
-            logger.warning("Failed sending AdsGram ad, falling back: %s", e)
-            msg = await _send_fallback_ad(context, chat_id)
-    else:
-        msg = await _send_fallback_ad(context, chat_id)
- 
-    await asyncio.sleep(AD_DISPLAY_SECONDS)
-    return msg
- 
- 
-async def _send_fallback_ad(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton(FALLBACK_AD_BUTTON_TEXT, url=FALLBACK_AD_BUTTON_URL)]]
-    )
-    return await context.bot.send_message(
-        chat_id=chat_id,
-        text=FALLBACK_AD_TEXT,
-        parse_mode=ParseMode.HTML,
-        reply_markup=keyboard,
-        protect_content=True,
-    )
- 
- 
-# ============================================================
-# ========================= COMMANDS ==========================
-# ============================================================
- 
-async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await get_user_record(update.effective_user.id)
-    text = (
-        "👋 <b>Welcome to DLX Multi-Downloader!</b>\n\n"
-        "🎬 ማንኛውንም ቪድዮ ሊንክ ላክልኝ (YouTube, TikTok, Facebook, Instagram, X, ወዘተ) "
-        "እኔ ደግሞ በምትፈልገው ጥራት <b>Video</b> ወይም <b>Audio (MP3)</b> አድርጌ አወርድልሃለሁ።\n\n"
-        f"ℹ️ ያለ ክፍያ {FREE_DOWNLOADS} ጊዜ ማውረድ ትችላለህ/ሽ። ከዛ ቻናላችንን መቀላቀል ያስፈልጋል።\n\n"
-        "⭐ ቦቱን መደገፍ ከፈለክ /donate ብለህ ላክ።"
-    )
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
- 
- 
-async def stats_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
         return
-    users = await all_users_count()
-    stars = await total_stars_donated()
+
+    # CASE 3: ሙሉ ለሙሉ አዲስ ሰው (ነጋዴም ደንበኛም ያልሆነ)
+    text = (
+        "👋 *ሰላም!*\n\n"
+        "ይህ ቦት ለብዙ ነጋዴዎች የተዘጋጀ ራስ-ሰር የሽያጭ ረዳት ነው።\n\n"
+        "🛍️ ደንበኛ ከሆኑ የነጋዴው ማስፈንጠሪያ (link) ይጫኑ።\n"
+        "🏪 ነጋዴ ከሆኑ /register ብለው የራስዎን ስቶር በደቂቃዎች ይክፈቱ።"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("✅ ተቋርጧል። /start ብለው እንደገና ይጀምሩ።")
+    return ConversationHandler.END
+
+
+# ====================== ነጋዴ REGISTRATION FLOW ======================
+async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if storage.get_store_by_owner(update.effective_user.id):
+        await update.message.reply_text("⚠️ የተመዘገበ ስቶር አለዎት። /mystore ብለው ይመልከቱ።")
+        return ConversationHandler.END
+
+    context.user_data["new_store"] = {"products": {}}
     await update.message.reply_text(
-        f"👥 Total users: {users}\n⭐ Total Stars donated: {stars}"
+        "🏪 *ስቶርዎን እንክፍት!*\n\nየስቶርዎን ስም ይፃፉ (ለምሳሌ፡ ሀበሻ ስቶር):", parse_mode="Markdown"
     )
- 
- 
-async def donate_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not STARS_ENABLED:
-        await update.message.reply_text("⭐ Donations are currently disabled.")
-        return
-    buttons = [
-        [InlineKeyboardButton(f"⭐ {amt} Stars", callback_data=f"donate:{amt}")]
-        for amt in STARS_PRESET_AMOUNTS
+    return REG_NAME
+
+
+async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_store"]["store_name"] = update.message.text
+    await update.message.reply_text("📞 የስልክ ቁጥርዎን ይፃፉ:")
+    return REG_PHONE
+
+
+async def reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_store"]["phone"] = update.message.text
+    await update.message.reply_text("📍 ስቶርዎ የሚገኝበት ቦታ ይፃፉ:")
+    return REG_LOCATION
+
+
+async def reg_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["new_store"]["location"] = update.message.text
+    await update.message.reply_text(
+        "📦 *የመጀመሪያ ምርትዎን ይጨምሩ*\n\nየምርቱን ስም ይፃፉ (ለምሳሌ፡ 👟 ጫማ):", parse_mode="Markdown"
+    )
+    return REG_PRODUCT_NAME
+
+
+async def reg_product_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["temp_product_name"] = update.message.text
+    await update.message.reply_text("💵 ዋጋውን በቁጥር ብቻ ይፃፉ (ለምሳሌ፡ 1200):")
+    return REG_PRODUCT_PRICE
+
+
+async def reg_product_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        price = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("⚠️ በቁጥር ብቻ ይፃፉ፣ እንደገና ይሞክሩ:")
+        return REG_PRODUCT_PRICE
+
+    name = context.user_data.pop("temp_product_name")
+    products = context.user_data["new_store"]["products"]
+    key = f"p{len(products) + 1}"
+    products[key] = {"name": name, "price": price}
+
+    keyboard = [
+        [InlineKeyboardButton("➕ ሌላ ምርት ጨምር", callback_data="reg_more_yes")],
+        [InlineKeyboardButton("✅ ጨርሻለሁ", callback_data="reg_more_no")],
     ]
     await update.message.reply_text(
-        "⭐ <b>Support DLX Multi-Downloader</b>\n\n"
-        "ቦቱ ነጻ ሆኖ እንዲቆይ የፈለከውን መጠን Telegram Stars ልትደግፍ ትችላለህ/ሽ 🙏",
-        parse_mode=ParseMode.HTML,
-        reply_markup=InlineKeyboardMarkup(buttons),
+        f"✅ {name} - {price} ብር ተጨምሯል። ሌላ ይጨምራሉ?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
- 
- 
-async def donate_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return REG_MORE
+
+
+async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    _, amount_str = query.data.split(":", 1)
-    amount = int(amount_str)
- 
-    await context.bot.send_invoice(
-        chat_id=query.message.chat_id,
-        title=f"Support DLX Bot - {amount} Stars",
-        description="Thank you for supporting the development of this bot! ⭐",
-        payload=f"stars_donation_{amount}_{query.from_user.id}",
-        provider_token="",
-        currency="XTR",
-        prices=[LabeledPrice(label="Donation", amount=amount)],
+    await query.answer()
+
+    if query.data == "reg_more_yes":
+        await query.edit_message_text("የምርቱን ስም ይፃፉ:")
+        return REG_PRODUCT_NAME
+
+    # ጨርሷል → ስቶር ይፈጠራል
+    owner_id = query.from_user.id
+    store_id = f"store_{owner_id}"
+    store_data = context.user_data.pop("new_store")
+    store_data["owner_id"] = owner_id
+    storage.save_store(store_id, store_data)
+
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={store_id}"
+
+    text = (
+        "🎉 *ስቶርዎ በተሳካ ሁኔታ ተከፍቷል!*\n\n"
+        f"🏪 ስም: {store_data['store_name']}\n"
+        f"📦 ምርቶች: {len(store_data['products'])}\n\n"
+        "ይህን ማስፈንጠሪያ (link) ለደንበኞችዎ ያጋሩ፡\n"
+        f"`{link}`\n\n"
+        "ተጨማሪ ትዕዛዞች፡\n"
+        "➕ /addproduct — ምርት ለመጨመር\n"
+        "🧾 /myorders — ትዕዛዞችን ለማየት\n"
+        "🏪 /mystore — የስቶር መረጃ ለማየት"
     )
- 
- 
-async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.pre_checkout_query.answer(ok=True)
- 
- 
-async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    payment = update.message.successful_payment
-    amount = payment.total_amount
-    await add_stars_donation(update.effective_user.id, amount)
-    await update.message.reply_text(
-        f"🎉 አመሰግናለሁ! {amount} ⭐ Stars ተቀብያለሁ። ድጋፍህ በጣም ይረዳል!"
-    )
- 
- 
-# ============================================================
-# ===================== LINK / DOWNLOAD =======================
-# ============================================================
- 
-QUALITY_OPTIONS = [
-    ("🎥 Best Quality", "best"),
-    ("📺 720p", "720"),
-    ("📱 480p", "480"),
-    ("🎵 Audio (MP3)", "audio"),
-]
- 
- 
-def _quality_keyboard(token: str) -> InlineKeyboardMarkup:
-    rows, row = [], []
-    for label, key in QUALITY_OPTIONS:
-        row.append(InlineKeyboardButton(label, callback_data=f"dl:{key}:{token}"))
-        if len(row) == 2:
-            rows.append(row)
-            row = []
-    if row:
-        rows.append(row)
-    return InlineKeyboardMarkup(rows)
- 
- 
-async def handle_link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await enforce_join_if_needed(update, context):
-        return
- 
-    url = update.message.text.strip()
-    if not url.lower().startswith(("http://", "https://")):
-        await update.message.reply_text("⚠️ እባክህ/ሽ ትክክለኛ ሊንክ ላክ/ኪ።")
-        return
- 
-    token = uuid.uuid4().hex[:10]
-    context.bot_data.setdefault("pending_links", {})[token] = url
- 
-    await update.message.reply_text(
-        "🔎 ሊንኩን አገኘሁት! የምትፈልገውን ጥራት ምረጥ/ጪ፡",
-        reply_markup=_quality_keyboard(token),
-    )
- 
- 
-async def callback_router(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    data = query.data
- 
-    if data == "check_join":
-        await query.answer()
-        user_id = query.from_user.id
-        if await is_member_of_channel(context, user_id):
-            await mark_verified(user_id)
-            await query.edit_message_text("✅ አመሰግናለሁ! አሁን ቦቱን መጠቀም ትችላለህ/ሽ። ሊንክ ላክ/ኪ።")
-        else:
-            await query.answer("❌ ገና አልተቀላቀልክም/ም። እባክህ/ሽ መጀመሪያ ቻናሉን ተቀላቀል/ይ።", show_alert=True)
-        return
- 
-    if data.startswith("donate:"):
-        await query.answer()
-        await donate_callback(update, context)
-        return
- 
-    if data.startswith("dl:"):
-        await query.answer()
-        _, quality, token = data.split(":", 2)
-        url = context.bot_data.get("pending_links", {}).get(token)
-        if not url:
-            await query.edit_message_text("⚠️ ይህ ሊንክ ጊዜው አልፎበታል፣ እባክህ/ሽ እንደገና ላክ/ኪ።")
-            return
- 
-        as_audio = quality == "audio"
-        await query.edit_message_text("⏳ በማውረድ ላይ... እባክህ/ሽ ትንሽ ትዕግስት አድርግ/ጊ።")
- 
-        chat_id = query.message.chat_id
-        user_id = query.from_user.id
- 
-        ad_task = asyncio.create_task(show_ad(context, chat_id, user_id))
-        download_task = asyncio.create_task(do_download(url, quality=quality))
-        ad_msg, result = await asyncio.gather(ad_task, download_task)
- 
-        try:
-            await context.bot.delete_message(chat_id, ad_msg.message_id)
-        except Exception:
-            pass
- 
-        if not result["ok"]:
-            await context.bot.send_message(chat_id, f"❌ ስህተት ተፈጥሯል: {result['error']}")
-            return
- 
-        filepath = result["filepath"]
-        size_mb = os.path.getsize(filepath) / (1024 * 1024)
- 
-        if size_mb > MAX_TELEGRAM_FILE_MB:
-            await context.bot.send_message(
-                chat_id,
-                f"⚠️ ፋይሉ በጣም ትልቅ ነው ({size_mb:.1f}MB)። "
-                f"Telegram bot ከ{MAX_TELEGRAM_FILE_MB}MB በላይ መላክ አይችልም።",
-            )
-        else:
-            try:
-                with open(filepath, "rb") as f:
-                    if as_audio:
-                        await context.bot.send_audio(chat_id, audio=f, caption="🎵 DLX Multi-Downloader")
-                    else:
-                        await context.bot.send_video(
-                            chat_id, video=f, caption="🎬 DLX Multi-Downloader", supports_streaming=True
-                        )
-            except Exception as e:
-                await context.bot.send_message(chat_id, f"❌ መላክ አልተቻለም: {e}")
- 
-        try:
-            os.remove(filepath)
-        except OSError:
-            pass
- 
-        await increment_user_downloads(user_id)
-        context.bot_data.get("pending_links", {}).pop(token, None)
- 
- 
-# ============================================================
-# ======================= YT-DLP LOGIC =========================
-# ============================================================
- 
-QUALITY_FORMAT_MAP = {
-    "best": "best[filesize<50M]/best",
-    "720": "best[height<=720][filesize<50M]/best[height<=720]",
-    "480": "best[height<=480][filesize<50M]/best[height<=480]",
-}
- 
- 
-async def do_download(url: str, quality: str) -> dict:
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(None, _blocking_download, url, quality)
- 
- 
-def _blocking_download(url: str, quality: str) -> dict:
-    out_template = os.path.join(DOWNLOAD_DIR, f"{uuid.uuid4().hex}.%(ext)s")
-    as_audio = quality == "audio"
- 
-    ydl_opts = {
-        "outtmpl": out_template,
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-    }
- 
-    if as_audio:
-        ydl_opts.update(
-            {
-                "format": "bestaudio/best",
-                "postprocessors": [
-                    {
-                        "key": "FFmpegExtractAudio",
-                        "preferredcodec": "mp3",
-                        "preferredquality": "192",
-                    }
-                ],
-            }
-        )
-    else:
-        ydl_opts["format"] = QUALITY_FORMAT_MAP.get(quality, QUALITY_FORMAT_MAP["best"])
- 
+    await query.edit_message_text(text, parse_mode="Markdown")
+    return ConversationHandler.END
+
+
+# ====================== ምርት መጨመር (ለነባር ስቶር) ======================
+async def addproduct_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_store = storage.get_store_by_owner(update.effective_user.id)
+    if not owner_store:
+        await update.message.reply_text("⚠️ የተመዘገበ ስቶር የለዎትም። /register ብለው ይክፈቱ።")
+        return ConversationHandler.END
+
+    context.user_data["addprod_store_id"] = owner_store[0]
+    await update.message.reply_text("📦 የምርቱን ስም ይፃፉ:")
+    return ADDPROD_NAME
+
+
+async def addproduct_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["addprod_name"] = update.message.text
+    await update.message.reply_text("💵 ዋጋውን በቁጥር ብቻ ይፃፉ:")
+    return ADDPROD_PRICE
+
+
+async def addproduct_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            filepath = ydl.prepare_filename(info)
-            if as_audio:
-                base, _ = os.path.splitext(filepath)
-                filepath = base + ".mp3"
-        return {"ok": True, "filepath": filepath}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
- 
- 
-# ============================================================
-# ================ TELEGRAM APPLICATION SETUP =================
-# ============================================================
- 
-telegram_app: Application = Application.builder().token(BOT_TOKEN).build()
-telegram_app.add_handler(CommandHandler("start", start_cmd))
-telegram_app.add_handler(CommandHandler("stats", stats_cmd))
-telegram_app.add_handler(CommandHandler("donate", donate_cmd))
-telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_link))
-telegram_app.add_handler(CallbackQueryHandler(callback_router))
-telegram_app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-telegram_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
- 
- 
-# ============================================================
-# ========================= FASTAPI APP =========================
-# ============================================================
- 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # ---- startup ----
-    await telegram_app.initialize()
-    await telegram_app.start()
- 
-    if RENDER_EXTERNAL_URL:
-        webhook_url = f"{RENDER_EXTERNAL_URL}{WEBHOOK_PATH}"
-        await telegram_app.bot.set_webhook(url=webhook_url, allowed_updates=Update.ALL_TYPES)
-        logger.info("Webhook set to %s", webhook_url)
-    else:
-        logger.warning(
-            "RENDER_EXTERNAL_URL not found — webhook was NOT set. "
-            "Set it manually if you're not deploying on Render."
+        price = int(update.message.text.strip())
+    except ValueError:
+        await update.message.reply_text("⚠️ በቁጥር ብቻ ይፃፉ:")
+        return ADDPROD_PRICE
+
+    store_id = context.user_data.pop("addprod_store_id")
+    name = context.user_data.pop("addprod_name")
+    store = storage.get_store(store_id)
+    key = f"p{len(store.get('products', {})) + 1}"
+    storage.add_product(store_id, key, name, price)
+    await update.message.reply_text(f"✅ {name} - {price} ብር ተጨምሯል!")
+    return ConversationHandler.END
+
+
+# ====================== ምርት ማስወገድ ======================
+async def removeproduct(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_store = storage.get_store_by_owner(update.effective_user.id)
+    if not owner_store:
+        await update.message.reply_text("⚠️ የተመዘገበ ስቶር የለዎትም።")
+        return
+
+    store_id, store = owner_store
+    products = store.get("products", {})
+    if not products:
+        await update.message.reply_text("📭 የሚያስወግዱት ምርት የለም።")
+        return
+
+    keyboard = [
+        [InlineKeyboardButton(f"❌ {p['name']}", callback_data=f"delprod|{store_id}|{key}")]
+        for key, p in products.items()
+    ]
+    await update.message.reply_text("የሚያስወግዱትን ምርት ይምረጡ:", reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def removeproduct_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    _, store_id, key = query.data.split("|")
+    store = storage.get_store(store_id)
+
+    # ደህንነት: ራሱ የስቶሩ ባለቤት ብቻ ምርት ማስወገድ እንዲችል
+    if not store or store.get("owner_id") != query.from_user.id:
+        await query.edit_message_text("⚠️ ይህን ማድረግ አይፈቀድልዎትም።")
+        return
+
+    storage.remove_product(store_id, key)
+    await query.edit_message_text("✅ ምርቱ ተወግዷል።")
+
+
+# ====================== የስቶር መረጃ + ትዕዛዞች ======================
+async def mystore(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_store = storage.get_store_by_owner(update.effective_user.id)
+    if not owner_store:
+        await update.message.reply_text("⚠️ የተመዘገበ ስቶር የለዎትም። /register ብለው ይክፈቱ።")
+        return
+
+    store_id, store = owner_store
+    bot_username = (await context.bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={store_id}"
+    products = store.get("products", {})
+    products_text = "\n".join(f"  • {p['name']} - {p['price']} ብር" for p in products.values()) or "  (ምርት የለም)"
+
+    text = (
+        f"🏪 *{store['store_name']}*\n"
+        f"📞 {store['phone']}\n"
+        f"📍 {store['location']}\n\n"
+        f"📦 *ምርቶች ({len(products)})*\n{products_text}\n\n"
+        f"🔗 ማስፈንጠሪያ (ለደንበኞች ያጋሩ)፡\n`{link}`"
+    )
+    await update.message.reply_text(text, parse_mode="Markdown")
+
+
+async def myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    owner_store = storage.get_store_by_owner(update.effective_user.id)
+    if not owner_store:
+        await update.message.reply_text("⚠️ የተመዘገበ ስቶር የለዎትም። /register ብለው ይክፈቱ።")
+        return
+
+    store_id, _ = owner_store
+    orders = storage.get_orders_for_store(store_id, limit=10)
+    if not orders:
+        await update.message.reply_text("📭 እስካሁን ምንም ትዕዛዝ የለም።")
+        return
+
+    lines = ["🧾 *የቅርብ ጊዜ ትዕዛዞች*\n"]
+    for o in reversed(orders):
+        lines.append(
+            f"🛍️ {o['product']} — {o['price']} ብር\n"
+            f"👤 {o['name']} | 📞 {o['phone']}\n"
+            f"📍 {o['address']}\n🕒 {o['timestamp']}\n"
         )
- 
-    yield
- 
-    # ---- shutdown ----
-    await telegram_app.bot.delete_webhook()
-    await telegram_app.stop()
-    await telegram_app.shutdown()
- 
- 
-app = FastAPI(lifespan=lifespan)
- 
- 
-@app.get("/")
-async def health_check():
-    """Render pings this (or any route) to confirm the service is alive."""
-    return {"status": "ok", "service": "DLX Multi-Downloader"}
- 
- 
-@app.post(WEBHOOK_PATH)
-async def telegram_webhook(request: Request):
-    """Telegram sends updates here."""
-    data = await request.json()
-    update = Update.de_json(data, telegram_app.bot)
-    await telegram_app.process_update(update)
-    return Response(status_code=200)
- 
- 
-# ------------------------------------------------------------
-# Mini App UI (html_ui/) — put your existing Mini App front-end
-# files (index.html, css, js) inside a folder named "html_ui"
-# next to this main.py. It will be served at /app/
-#
-# If your UI is a single index.html with no assets, you can instead
-# just add a route like:
-#
-#   @app.get("/app")
-#   async def mini_app():
-#       return FileResponse("html_ui/index.html")
-# ------------------------------------------------------------
-if os.path.isdir("html_ui"):
-    app.mount("/app", StaticFiles(directory="html_ui", html=True), name="mini_app")
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
+
+
+# ====================== ደንበኛ MENU (ዋጋ/መረጃ) ======================
+async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    store_id = context.user_data.get("store_id")
+    store = storage.get_store(store_id) if store_id else None
+    if not store:
+        await query.edit_message_text("⚠️ ክፍለ-ጊዜዎ አልቋል። ከነጋዴው ማስፈንጠሪያ (link) /start እንደገና ይጀምሩ።")
+        return
+
+    if query.data == "menu_price":
+        await query.edit_message_text(
+            "📋 *የምርት ዝርዝር*\n\nከታች ካሉት ምረጡ 👇",
+            reply_markup=products_keyboard(store.get("products", {})),
+            parse_mode="Markdown",
+        )
+    elif query.data == "menu_info":
+        text = f"ℹ️ *{store['store_name']}*\n\n📍 {store['location']}\n📞 {store['phone']}"
+        await query.edit_message_text(text, reply_markup=main_menu_keyboard(), parse_mode="Markdown")
+    elif query.data == "menu_back":
+        await query.edit_message_text("ከታች ካሉት አማራጮች ይምረጡ 👇", reply_markup=main_menu_keyboard())
+
+
+# ====================== ደንበኛ ORDER FLOW ======================
+async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    store_id = context.user_data.get("store_id")
+    store = storage.get_store(store_id) if store_id else None
+    if not store:
+        await query.edit_message_text("⚠️ ክፍለ-ጊዜዎ አልቋል። ከነጋዴው link /start እንደገና ይጀምሩ።")
+        return ConversationHandler.END
+
+    await query.edit_message_text("🛒 የትኛውን ምርት ይፈልጋሉ?", reply_markup=products_keyboard(store.get("products", {})))
+    return SELECT_PRODUCT
+
+
+async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "menu_back":
+        await query.edit_message_text("ከታች ካሉት አማራጮች ይምረጡ 👇", reply_markup=main_menu_keyboard())
+        return ConversationHandler.END
+
+    store_id = context.user_data.get("store_id")
+    store = storage.get_store(store_id)
+    product_key = query.data.replace("prod_", "")
+    product = store.get("products", {}).get(product_key) if store else None
+
+    if not product:
+        await query.edit_message_text("⚠️ ምርቱ አልተገኘም፣ እንደገና ይሞክሩ።")
+        return ConversationHandler.END
+
+    context.user_data["order"] = {
+        "store_id": store_id,
+        "product": product["name"],
+        "price": product["price"],
+    }
+    await query.edit_message_text(f"✅ {product['name']} ተመርጧል።\n\nእስኪ ስምዎን ይፃፉ:")
+    return GET_NAME
+
+
+async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["order"]["name"] = update.message.text
+    await update.message.reply_text("📞 ስልክ ቁጥርዎን ይፃፉ:")
+    return GET_PHONE
+
+
+async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["order"]["phone"] = update.message.text
+    await update.message.reply_text("📍 አድራሻዎን/የመረክቢያ ቦታ ይፃፉ:")
+    return GET_ADDRESS
+
+
+async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    order = context.user_data["order"]
+    order["address"] = update.message.text
+
+    summary = (
+        "📦 *ትዕዛዝ ማረጋገጫ*\n\n"
+        f"🛍️ ምርት: {order['product']}\n"
+        f"💵 ዋጋ: {order['price']} ብር\n"
+        f"👤 ስም: {order['name']}\n"
+        f"📞 ስልክ: {order['phone']}\n"
+        f"📍 አድራሻ: {order['address']}\n\n"
+        "ትክክል ነው?"
+    )
+    keyboard = [
+        [InlineKeyboardButton("✅ አረጋግጥ", callback_data="confirm_yes")],
+        [InlineKeyboardButton("❌ ሰርዝ", callback_data="confirm_no")],
+    ]
+    await update.message.reply_text(summary, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+    return CONFIRM
+
+
+async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "confirm_no":
+        await query.edit_message_text("❌ ትዕዛዙ ተሰርዟል። /start ብለው እንደገና መሞከር ይችላሉ።")
+        context.user_data.pop("order", None)
+        return ConversationHandler.END
+
+    order = context.user_data["order"]
+    order["timestamp"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+    order["customer_chat_id"] = query.from_user.id
+    storage.save_order(order)
+
+    await query.edit_message_text("✅ ትዕዛዝዎ ተመዝግቧል! በቅርቡ እንገናኝዎታለን። 🙏")
+
+    # ለስቶሩ ባለቤት (ነጋዴ) notification መላክ
+    store = storage.get_store(order["store_id"])
+    if store:
+        owner_text = (
+            "🔔 *አዲስ ትዕዛዝ መጣ!*\n\n"
+            f"🛍️ ምርት: {order['product']}\n"
+            f"💵 ዋጋ: {order['price']} ብር\n"
+            f"👤 ስም: {order['name']}\n"
+            f"📞 ስልክ: {order['phone']}\n"
+            f"📍 አድራሻ: {order['address']}\n"
+            f"🕒 ጊዜ: {order['timestamp']}"
+        )
+        await context.bot.send_message(chat_id=store["owner_id"], text=owner_text, parse_mode="Markdown")
+
+    context.user_data.pop("order", None)
+    return ConversationHandler.END
+
+
+# ====================== MAIN ======================
+def main():
+    if BOT_TOKEN == "YOUR_BOT_TOKEN_HERE":
+        raise RuntimeError("⚠️ BOT_TOKEN environment variable አልተቀመጠም! Render Environment ላይ ይጨምሩ።")
+
+    app = Application.builder().token(BOT_TOKEN).build()
+
+    register_conv = ConversationHandler(
+        entry_points=[CommandHandler("register", register_start)],
+        states={
+            REG_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
+            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_phone)],
+            REG_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_location)],
+            REG_PRODUCT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product_name)],
+            REG_PRODUCT_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product_price)],
+            REG_MORE: [CallbackQueryHandler(reg_more, pattern="^reg_more_")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,  # states ውስጥ MessageHandler እና CallbackQueryHandler ስላሉ ሆን ተብሎ የተደረገ
+    )
+
+    addproduct_conv = ConversationHandler(
+        entry_points=[CommandHandler("addproduct", addproduct_start)],
+        states={
+            ADDPROD_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_name)],
+            ADDPROD_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_price)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+    )
+
+    order_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(order_start, pattern="^menu_order$")],
+        states={
+            SELECT_PRODUCT: [CallbackQueryHandler(select_product, pattern="^(prod_|menu_back)")],
+            GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_phone)],
+            GET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_address)],
+            CONFIRM: [CallbackQueryHandler(confirm_order, pattern="^confirm_")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,  # states ውስጥ MessageHandler እና CallbackQueryHandler ስላሉ ሆን ተብሎ የተደረገ
+    )
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(register_conv)
+    app.add_handler(addproduct_conv)
+    app.add_handler(order_conv)
+    app.add_handler(CommandHandler("mystore", mystore))
+    app.add_handler(CommandHandler("myorders", myorders))
+    app.add_handler(CommandHandler("removeproduct", removeproduct))
+    app.add_handler(CallbackQueryHandler(removeproduct_callback, pattern=r"^delprod\|"))
+    app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_(price|info|back)$"))
+
+    port = int(os.environ.get("PORT", 10000))
+    render_url = os.environ.get("RENDER_EXTERNAL_URL")  # Render ራሱ በራስ-ሰር የሚሞላው
+
+    if render_url:
+        # ====== WEBHOOK MODE (Render Web Service ላይ) ======
+        logger.info("🌐 Webhook mode ላይ በ Render እየጀመረ ነው → %s", render_url)
+        app.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            url_path=BOT_TOKEN,
+            webhook_url=f"{render_url}/{BOT_TOKEN}",
+        )
+    else:
+        # ====== POLLING MODE (Local ሙከራ) ======
+        logger.info("💻 Polling mode ላይ Local እየጀመረ ነው...")
+        app.run_polling()
+
+
+if __name__ == "__main__":
+    main()
