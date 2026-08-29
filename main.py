@@ -1,18 +1,13 @@
 """
-TELEGRAM MULTI-TENANT SHOP BOT - COMPLETE VERSION
-ሙሉ ተግባራዊ Telegram ሱቅ ቦት
-============================================
-✅ All fixes included
-✅ No markdown errors
-✅ Production ready
-✅ For Render.com deployment
+TELEGRAM MULTI-TENANT SHOP BOT - FIXED FOR RENDER
+Working with python-telegram-bot 21.6
 """
 
 import logging
 import os
 import asyncio
+import json
 from datetime import datetime, timedelta
-from collections import defaultdict
 
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import (
@@ -25,44 +20,34 @@ from telegram.ext import (
     filters,
 )
 
-# ====================== SETUP LOGGING ======================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
+# ====================== SETUP ======================
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger(__name__)
 
-# ====================== CONFIG FROM ENVIRONMENT ======================
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 if not BOT_TOKEN:
-    logger.error("ERROR: BOT_TOKEN not set! Set it in Render environment variables")
-    raise ValueError("BOT_TOKEN is required")
+    raise ValueError("BOT_TOKEN environment variable not set!")
 
 PORT = int(os.environ.get("PORT", 10000))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 
-logger.info(f"Bot starting... TOKEN: {BOT_TOKEN[:20]}... PORT: {PORT}")
+STORAGE_DIR = "bot_data"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-# ====================== CONVERSATION STATES ======================
+logger.info(f"Starting bot... TOKEN: {BOT_TOKEN[:20]}... Webhook: {bool(RENDER_EXTERNAL_URL)}")
+
+# ====================== STATES ======================
 SELECT_PRODUCT, GET_NAME, GET_PHONE, GET_ADDRESS, CONFIRM = range(5)
 REG_NAME, REG_PHONE, REG_LOCATION, REG_PAYMENT, REG_PROD_NAME, REG_PROD_PRICE, REG_PROD_PHOTO, REG_PROD_DESC, REG_MORE = range(10, 19)
 ADDPROD_NAME, ADDPROD_PRICE, ADDPROD_PHOTO, ADDPROD_DESC = range(20, 24)
 
-# ====================== STORAGE (Simple File-Based) ======================
-STORAGE_DIR = "bot_data"
-os.makedirs(STORAGE_DIR, exist_ok=True)
-
-import json
-
+# ====================== STORAGE FUNCTIONS ======================
 def save_store(store_id, data):
-    """Save store to JSON"""
     path = os.path.join(STORAGE_DIR, f"store_{store_id}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-    logger.info(f"Saved store: {store_id}")
 
 def get_store(store_id):
-    """Get store from JSON"""
     path = os.path.join(STORAGE_DIR, f"store_{store_id}.json")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -70,7 +55,6 @@ def get_store(store_id):
     return None
 
 def get_store_by_owner(owner_id):
-    """Get store by owner ID"""
     for file in os.listdir(STORAGE_DIR):
         if file.startswith("store_"):
             store = get_store(file.replace("store_", "").replace(".json", ""))
@@ -79,16 +63,13 @@ def get_store_by_owner(owner_id):
     return None
 
 def save_order(order):
-    """Save order to JSON"""
     order_id = f"order_{datetime.now().strftime('%Y%m%d%H%M%S')}"
     path = os.path.join(STORAGE_DIR, f"{order_id}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(order, f, ensure_ascii=False, indent=2)
-    logger.info(f"Saved order: {order_id}")
     return order_id
 
 def get_orders(store_id, limit=20):
-    """Get recent orders for store"""
     orders = []
     for file in sorted(os.listdir(STORAGE_DIR), reverse=True):
         if file.startswith("order_"):
@@ -101,9 +82,7 @@ def get_orders(store_id, limit=20):
                         break
     return orders
 
-# ====================== HELPER FUNCTIONS ======================
 def is_active(store):
-    """Check if store subscription is active"""
     reg_date_str = store.get("registration_date", datetime.now().strftime("%Y-%m-%d"))
     try:
         reg_date = datetime.strptime(reg_date_str, "%Y-%m-%d")
@@ -112,8 +91,8 @@ def is_active(store):
     expiry = reg_date + timedelta(days=30)
     return datetime.now() < expiry
 
+# ====================== KEYBOARDS ======================
 def main_menu():
-    """Customer main menu keyboard"""
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("📋 Products", callback_data="menu_products")],
         [InlineKeyboardButton("🛒 Order", callback_data="menu_order")],
@@ -121,7 +100,6 @@ def main_menu():
     ])
 
 def products_menu(products):
-    """Product selection keyboard"""
     buttons = [
         [InlineKeyboardButton(f"{p['name']} - {p['price']} Br", callback_data=f"prod_{k}")]
         for k, p in products.items()
@@ -129,12 +107,10 @@ def products_menu(products):
     buttons.append([InlineKeyboardButton("Back", callback_data="menu_back")])
     return InlineKeyboardMarkup(buttons)
 
-# ====================== /START COMMAND ======================
+# ====================== COMMANDS ======================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start command"""
     args = context.args
     
-    # Customer visiting with store link
     if args:
         store_id = args[0]
         store = get_store(store_id)
@@ -147,39 +123,40 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         context.user_data["store_id"] = store_id
         await update.message.reply_text(
-            f"Welcome to {store['store_name']}!\n\nChoose an option below:",
+            f"Welcome to {store['store_name']}!\n\nChoose an option:",
             reply_markup=main_menu()
         )
         return
     
-    # Merchant checking their store
     owner_store = get_store_by_owner(update.effective_user.id)
     if owner_store:
         store_id, store = owner_store
         status = "Active" if is_active(store) else "Expired"
         await update.message.reply_text(
-            f"Welcome Merchant!\n\n"
+            f"Welcome!\n\n"
             f"Store: {store['store_name']}\n"
-            f"Username: @{store.get('username', 'N/A')}\n"
+            f"Username: @{store.get('username')}\n"
             f"Status: {status}\n\n"
             f"/mystore - Store Info\n"
-            f"/addproduct - Add Product\n"
-            f"/dashboard - View Stats\n"
-            f"/myorders - Recent Orders\n"
+            f"/dashboard - Stats\n"
+            f"/myorders - Orders\n"
             f"/test_notify - Test Message"
         )
         return
     
-    # New user
     await update.message.reply_text(
         "Welcome to Telegram Shop Bot!\n\n"
-        "Merchants: /register to create your shop\n"
-        "Trial: Free 30 days"
+        "Merchants: /register\n"
+        "Customers: Get store link"
     )
+
+async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await update.message.reply_text("Cancelled. /start to begin")
+    return ConversationHandler.END
 
 # ====================== MERCHANT REGISTRATION ======================
 async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start merchant registration"""
     if get_store_by_owner(update.effective_user.id):
         await update.message.reply_text("You already have a store!")
         return ConversationHandler.END
@@ -195,23 +172,23 @@ async def register_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Create Your Store!\n\n"
         f"Telegram: @{update.effective_user.username}\n"
         f"ID: {update.effective_user.id}\n\n"
-        "What's your store name?"
+        "Store name?"
     )
     return REG_NAME
 
 async def reg_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_store"]["store_name"] = update.message.text
-    await update.message.reply_text("What's your phone number?")
+    await update.message.reply_text("Phone number?")
     return REG_PHONE
 
 async def reg_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_store"]["phone"] = update.message.text
-    await update.message.reply_text("Your location?")
+    await update.message.reply_text("Location?")
     return REG_LOCATION
 
 async def reg_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["new_store"]["location"] = update.message.text
-    await update.message.reply_text("Payment account details? (Bank/Telebirr)")
+    await update.message.reply_text("Payment account?")
     return REG_PAYMENT
 
 async def reg_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -221,7 +198,7 @@ async def reg_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def reg_prod_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["temp_prod_name"] = update.message.text
-    await update.message.reply_text("Price? (number only)")
+    await update.message.reply_text("Price (number)?")
     return REG_PROD_PRICE
 
 async def reg_prod_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -230,7 +207,7 @@ async def reg_prod_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("Enter number only")
         return REG_PROD_PRICE
-    await update.message.reply_text("Product photo? (or /skip)")
+    await update.message.reply_text("Photo? (/skip if not)")
     return REG_PROD_PHOTO
 
 async def reg_prod_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -238,7 +215,7 @@ async def reg_prod_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["temp_prod_photo"] = update.message.photo[-1].file_id
     else:
         context.user_data["temp_prod_photo"] = None
-    await update.message.reply_text("Description? (or /skip)")
+    await update.message.reply_text("Description? (/skip if not)")
     return REG_PROD_DESC
 
 async def reg_prod_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -271,7 +248,6 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Product name?")
         return REG_PROD_NAME
     
-    # Save store
     owner_id = query.from_user.id
     store_id = f"store_{owner_id}"
     store_data = context.user_data.pop("new_store")
@@ -289,30 +265,25 @@ async def reg_more(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Store Created!\n\n"
         f"Name: {store_data['store_name']}\n"
         f"Username: @{store_data['username']}\n"
-        f"Payment: {store_data['payment_method']}\n\n"
-        f"Share link: {link}"
+        f"Link: {link}"
     )
     
-    # Send welcome message
     try:
         await context.bot.send_message(
             chat_id=owner_id,
             text=f"Welcome to your store!\n"
                  f"Store: {store_data['store_name']}\n"
-                 f"Username: @{store_data['username']}\n"
-                 f"30-day free trial started!\n\n"
-                 f"/test_notify - Test messaging\n"
-                 f"/dashboard - View stats"
+                 f"Username: @{store_data['username']}\n\n"
+                 f"/test_notify - Test\n"
+                 f"/dashboard - Stats"
         )
-        logger.info(f"Welcome message sent to {owner_id}")
     except Exception as e:
-        logger.error(f"Failed to send welcome: {e}")
+        logger.error(f"Welcome message failed: {e}")
     
     return ConversationHandler.END
 
 # ====================== MERCHANT COMMANDS ======================
 async def mystore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show store info"""
     owner_store = get_store_by_owner(update.effective_user.id)
     if not owner_store:
         await update.message.reply_text("No store found")
@@ -329,7 +300,6 @@ async def mystore(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def test_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Test merchant notification"""
     owner_store = get_store_by_owner(update.effective_user.id)
     if not owner_store:
         await update.message.reply_text("No store found")
@@ -339,23 +309,17 @@ async def test_notify(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = store.get("user_id")
     username = store.get("username")
     
-    test_msg = (
-        f"Test Message!\n\n"
-        f"If you see this, messaging works.\n"
-        f"Store: {store['store_name']}\n"
-        f"Username: @{username}"
-    )
+    test_msg = f"Test Message!\n\nIf you see this, messaging works.\nStore: {store['store_name']}\nUsername: @{username}"
     
     try:
         await context.bot.send_message(chat_id=user_id, text=test_msg)
-        await update.message.reply_text(f"Test message sent to @{username}")
+        await update.message.reply_text(f"Test sent to @{username}")
         logger.info(f"Test message sent to {user_id}")
     except Exception as e:
         await update.message.reply_text(f"Failed: {str(e)}")
-        logger.error(f"Test message failed: {e}")
+        logger.error(f"Test failed: {e}")
 
 async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Merchant dashboard"""
     owner_store = get_store_by_owner(update.effective_user.id)
     if not owner_store:
         await update.message.reply_text("No store found")
@@ -372,11 +336,10 @@ async def dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Total Orders: {total_orders}\n"
         f"Total Revenue: {total_revenue} Br\n"
         f"Products: {len(store.get('products', {}))}\n"
-        f"Status: Active" if is_active(store) else "Expired"
+        f"Status: {'Active' if is_active(store) else 'Expired'}"
     )
 
 async def myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show recent orders"""
     owner_store = get_store_by_owner(update.effective_user.id)
     if not owner_store:
         await update.message.reply_text("No store found")
@@ -389,19 +352,12 @@ async def myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     text = "Recent Orders:\n\n"
     for i, o in enumerate(orders, 1):
-        text += (
-            f"{i}. {o.get('product', 'Unknown')}\n"
-            f"   {o.get('price')} Br\n"
-            f"   {o.get('name')}\n"
-            f"   {o.get('phone')}\n"
-            f"   {o.get('timestamp')}\n\n"
-        )
+        text += f"{i}. {o.get('product')}\n   {o.get('price')} Br\n   {o.get('name')}\n   {o.get('phone')}\n\n"
     
     await update.message.reply_text(text)
 
 # ====================== CUSTOMER ORDER FLOW ======================
 async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Start order"""
     query = update.callback_query
     await query.answer()
     
@@ -416,12 +372,11 @@ async def order_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return SELECT_PRODUCT
 
 async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Select product"""
     query = update.callback_query
     await query.answer()
     
     if query.data == "menu_back":
-        await query.edit_message_text("Choose an option:", reply_markup=main_menu())
+        await query.edit_message_text("Choose:", reply_markup=main_menu())
         return ConversationHandler.END
     
     store_id = context.user_data.get("store_id")
@@ -437,7 +392,7 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["product"] = product["name"]
     context.user_data["order"]["price"] = product["price"]
     
-    text = f"Product: {product['name']}\nPrice: {product['price']} Br\n\nEnter your name:"
+    text = f"Product: {product['name']}\nPrice: {product['price']} Br\n\nYour name?"
     
     if product.get("photo"):
         await context.bot.send_photo(
@@ -452,26 +407,19 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def get_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["name"] = update.message.text
-    await update.message.reply_text("Phone number?")
+    await update.message.reply_text("Phone?")
     return GET_PHONE
 
 async def get_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["phone"] = update.message.text
-    await update.message.reply_text("Delivery address?")
+    await update.message.reply_text("Address?")
     return GET_ADDRESS
 
 async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["order"]["address"] = update.message.text
     order = context.user_data["order"]
     
-    summary = (
-        f"Confirm Order?\n\n"
-        f"Product: {order['product']}\n"
-        f"Price: {order['price']} Br\n"
-        f"Name: {order['name']}\n"
-        f"Phone: {order['phone']}\n"
-        f"Address: {order['address']}"
-    )
+    summary = f"Confirm?\n\nProduct: {order['product']}\nPrice: {order['price']} Br\nName: {order['name']}\nPhone: {order['phone']}\nAddress: {order['address']}"
     
     keyboard = [
         [InlineKeyboardButton("Confirm", callback_data="confirm_yes")],
@@ -482,12 +430,11 @@ async def get_address(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return CONFIRM
 
 async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Confirm order"""
     query = update.callback_query
     await query.answer()
     
     if query.data == "confirm_no":
-        await query.message.reply_text("Order cancelled")
+        await query.message.reply_text("Cancelled")
         context.user_data.pop("order", None)
         return ConversationHandler.END
     
@@ -501,22 +448,13 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     # Notify merchant
     if store and "user_id" in store:
-        notify_text = (
-            f"New Order!\n\n"
-            f"Store: {store['store_name']}\n"
-            f"Product: {order['product']}\n"
-            f"Price: {order['price']} Br\n"
-            f"Name: {order['name']}\n"
-            f"Phone: {order['phone']}\n"
-            f"Address: {order['address']}\n"
-            f"Time: {order['timestamp']}"
-        )
+        notify_text = f"New Order!\n\nStore: {store['store_name']}\nProduct: {order['product']}\nPrice: {order['price']} Br\nName: {order['name']}\nPhone: {order['phone']}\nAddress: {order['address']}\nTime: {order['timestamp']}"
         
         try:
             await context.bot.send_message(chat_id=store["user_id"], text=notify_text)
             logger.info(f"Order notification sent to {store['user_id']}")
         except Exception as e:
-            logger.error(f"Failed to notify merchant: {e}")
+            logger.error(f"Failed to notify: {e}")
     
     # Send payment info
     payment_method = store.get('payment_method', 'N/A') if store else 'N/A'
@@ -526,8 +464,7 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Product: {order['product']}\n"
         f"Total: {order['price']} Br\n\n"
         f"Pay to: {payment_method}\n\n"
-        f"After payment, send screenshot to:\n"
-        f"{store.get('phone')}"
+        f"Send screenshot to: {store.get('phone') if store else 'N/A'}"
     )
     
     context.user_data.pop("order", None)
@@ -535,7 +472,6 @@ async def confirm_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ====================== MENU CALLBACKS ======================
 async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle menu callbacks"""
     query = update.callback_query
     await query.answer()
     
@@ -546,31 +482,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("Products:", reply_markup=products_menu(store.get("products", {})))
     
     elif query.data == "menu_info":
-        info = (
-            f"Store: {store['store_name']}\n"
-            f"Username: @{store.get('username')}\n"
-            f"Phone: {store.get('phone')}\n"
-            f"Location: {store.get('location')}\n\n"
-            f"Click Order to buy"
-        )
+        info = f"Store: {store['store_name']}\nUsername: @{store.get('username')}\nPhone: {store.get('phone')}\nLocation: {store.get('location')}\n\nClick Order to buy"
         await query.edit_message_text(info, reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("Back", callback_data="menu_back")]]))
     
     elif query.data == "menu_back":
         await query.edit_message_text("Choose:", reply_markup=main_menu())
 
-# ====================== CANCEL ======================
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Cancel conversation"""
-    context.user_data.clear()
-    await update.message.reply_text("Cancelled. /start to begin")
-    return ConversationHandler.END
-
-# ====================== MAIN APPLICATION ======================
+# ====================== MAIN ======================
 async def main():
-    """Start bot"""
     app = Application.builder().token(BOT_TOKEN).build()
     
-    # Registration conversation
+    # Register conversation
     register_conv = ConversationHandler(
         entry_points=[CommandHandler("register", register_start)],
         states={
@@ -615,15 +537,10 @@ async def main():
     app.add_handler(CallbackQueryHandler(menu_callback, pattern="^menu_"))
     
     # Start bot
-    await app.initialize()
-    
     if RENDER_EXTERNAL_URL:
-        # Webhook mode (Render.com)
-        logger.info(f"Starting webhook mode on {RENDER_EXTERNAL_URL}")
-        await app.bot.set_webhook(url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
-        
-        from telegram.ext import Updater
+        logger.info(f"Starting webhook mode: {RENDER_EXTERNAL_URL}")
         async with app:
+            await app.bot.set_webhook(url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
             await app.start()
             await app.updater.start_webhook(
                 listen="0.0.0.0",
@@ -631,14 +548,15 @@ async def main():
                 url_path=BOT_TOKEN,
                 webhook_url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
             )
-            await app.updater.idle()
+            logger.info("Bot is running (webhook mode)")
+            await asyncio.Event().wait()
     else:
-        # Polling mode (local development)
         logger.info("Starting polling mode")
         async with app:
             await app.start()
             await app.updater.start_polling()
-            await app.updater.idle()
+            logger.info("Bot is running (polling mode)")
+            await asyncio.Event().wait()
 
 if __name__ == "__main__":
     try:
