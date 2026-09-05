@@ -1,23 +1,23 @@
 """
-🎊 TELEGRAM SHOP BOT — FIXED VERSION
+🎊 TELEGRAM SHOP BOT — v3
 ========================================================
-ማስተካከያዎች (Fixes in this version):
-1. ✅ የነጋዴ ሱቅ ሊንክ ተስተካክሏል - ደንበኛ ሊንኩን ሲነካ የነጋዴውን ምርቶች ያሳየዋል
-   (Fixed store deep-link — clicking a merchant's link now shows THAT
-   merchant's products instead of pushing the visitor into /register)
-2. ✅ ፎቶ (screenshot) መቀበል ተጨምሯል - ትዕዛዝ ከተረጋገጠ በኋላ የክፍያ screenshot ይጠየቃል
-   (Photo/screenshot handling added — after confirming an order, the
-   customer is asked to send a payment screenshot, which is forwarded
-   to the merchant)
-3. ✅ /received ትዕዛዝ ተጨምሯል - ደንበኛው እቃው እንደደረሰው ሲያረጋግጥ ነጋዴውን ያሳውቃል
-   (New /received command — customer confirms delivery, merchant is
-   notified, customer is invited to rate)
-4. ✅ /dispute እና /rate ሙሉ በሙሉ ተተግብረዋል (proof photo ጨምሮ)
-   (Full /dispute and /rate conversations implemented, including
-   photo proof for disputes)
-5. ✅ Admin/Owner ትእዛዝ ተጨምሯል - ሁሉንም ነጋዴዎችና ትዕዛዞች ለማየት
-   (New admin commands so the bot owner can see all merchants,
-   products, and orders)
+በዚህ ስሪት ላይ የተጨመሩ/የተስተካከሉ ነገሮች:
+
+1. ✅ የነጋዴ ሱቅ ሊንክ ትክክል ነው የሚሰራው (deep-link fix)
+2. ✅ ፎቶ (screenshot) መቀበል ስራ ላይ ውሏል
+3. ✅ ትዕዛዝ ከተረጋገጠ በኋላ የክፍያ screenshot ይጠየቃል
+4. ✅ /received - ደንበኛው እቃው እንደደረሰው ያረጋግጣል
+5. ✅ /dispute እና /rate ሙሉ በሙሉ ተተግብረዋል
+6. ✅ Admin/Owner ትዕዛዝ (/admin_merchants, /admin_orders)
+------------------------ አዲስ (v3) ------------------------
+7. 🆕 ነጋዴ ለእያንዳንዱ ምርት ፎቶ መጨመር ይችላል (/register እና /addproduct)
+   ደንበኞችም የምርቱን ፎቶ አይተው ነው የሚመርጡት
+8. 🆕 /help የበለጠ ሰፊ እና ግልጽ ማብራሪያ ይሰጣል
+9. 🆕 /contact - ስለ ቦቱ ችግር ካለ በቀጥታ ወደ bot owner መልእክት ይልካል
+10. 🆕 ትዕዛዝ ከተረጋገጠ በኋላ ደንበኛው የመክፈያ አይነት ይመርጣል:
+    🏦 የሞባይል ባንክ / ቴሌብር (screenshot በመላክ)
+    💵 እቃው ሲደርስ ብር (Cash on Delivery)
+    ⭐ Telegram Stars
 """
 
 import logging
@@ -27,13 +27,14 @@ import json
 from datetime import datetime
 from uuid import uuid4
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice, Update
 from telegram.ext import (
     Application,
     CommandHandler,
     CallbackQueryHandler,
     ConversationHandler,
     MessageHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -52,6 +53,9 @@ if not BOT_TOKEN:
 PORT = int(os.environ.get("PORT", 10000))
 RENDER_EXTERNAL_URL = os.environ.get("RENDER_EXTERNAL_URL", "")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
+# Simple Birr -> Telegram Stars conversion. Adjust in your environment
+# variables if you want a different rate (e.g. STARS_RATE=0.5).
+STARS_RATE = float(os.environ.get("STARS_RATE", "1"))
 
 STORAGE_DIR = "bot_data"
 os.makedirs(STORAGE_DIR, exist_ok=True)
@@ -59,15 +63,16 @@ os.makedirs(STORAGE_DIR, exist_ok=True)
 logger.info("✅ Bot initialized - All systems ready")
 
 # ====================== CONVERSATION STATES ======================
-# REGISTRATION
-REG_STORE_NAME, REG_PHONE, REG_LOCATION, REG_PAYMENT, REG_PRODUCT, REG_PRICE = range(6)
+# REGISTRATION (also reused by the /addproduct flow)
+REG_STORE_NAME, REG_PHONE, REG_LOCATION, REG_PAYMENT, REG_PRODUCT, REG_PRICE, REG_PHOTO = range(7)
 
 # ORDER FLOW
 ORDER_GET_NAME = 11
 ORDER_GET_PHONE = 12
 ORDER_GET_ADDRESS = 13
 ORDER_CONFIRM = 14
-ORDER_PAYMENT_PROOF = 15
+ORDER_PAYMENT_METHOD = 15
+ORDER_PAYMENT_PROOF = 16
 
 # DISPUTE FLOW
 DISPUTE_SELECT_ORDER = 19
@@ -78,42 +83,59 @@ DISPUTE_PROOF = 21
 RATING_SELECT_ORDER = 29
 RATING_SCORE = 30
 
-# ====================== TEXTS - AMHARIC FIRST ======================
+# CONTACT ADMIN FLOW
+CONTACT_MESSAGE = 40
+
+# ====================== TEXTS - AMHARIC ======================
 TEXTS = {
     "am": {
-        "start": "👋 ሰላም! ቴሌግራም ሱቅ ቦት ውስጥ እንኳን ወደ ደህና መጡ!\n\n🏪 ሱቅ ለመክፈት: /register\n📚 እርዳታ: /help",
-        "help": """📚 ቦት እንዴት ይጠቀም
+        "start": "👋 ሰላም! ቴሌግራም ሱቅ ቦት ውስጥ እንኳን ወደ ደህና መጡ!\n\n🏪 ሱቅ ለመክፈት: /register\n📚 ስለ ቦቱ ለማወቅ: /help",
+        "help": """📚 ይህ ቦት ምን ያደርጋል?
 
+ይህ ቦት ማንኛውም ነጋዴ የራሱን ትንሽ ሱቅ ከፍቶ በቴሌግራም በኩል እቃ እንዲሸጥ፣ እና ደንበኞች በቀላሉ አይተው እንዲያዙ የሚያግዝ ነው።
+
+━━━━━━━━━━━━━━━━
 👨‍🏪 ለነጋዴዎች:
-/register - ሱቅ ክፈት
-/addproduct - ምርት ጨምር
-/dashboard - ስታቲስቲክስ
-/myorders - ትዕዛዞች
-/mystore - የሱቅ ሊንክ
+/register - አዲስ ሱቅ ክፈት (ስም፣ ስልክ፣ ቦታ፣ ክፍያ መንገድ እና 1ኛ ምርት ከፎቶ ጋር ይመዘገባል)
+/addproduct - ተጨማሪ ምርት (ከፎቶ ጋር) ጨምር
+/mystore - የሱቅዎን ሊንክ ያግኙ፣ ለደንበኞች ያጋሩ
+/myorders - የደረሱ ትዕዛዞችን ይመልከቱ
+/dashboard - አጠቃላይ ስታቲስቲክስ (ገቢ፣ ደረጃ፣ ወዘተ)
 
+━━━━━━━━━━━━━━━━
 👥 ለደንበኞች:
-🔗 የነጋዴ ሊንክ ጠቅ በማድረግ ይግዙ
-/received - እቃው እንደደረሰዎት ያረጋግጡ
-/rate - ትዕዛዝ ደረጃ ይስጡ
+1️⃣ ነጋዴው የላከልዎትን ሊንክ ይንኩ
+2️⃣ የምርቶቹን ፎቶ እያዩ የፈለጉትን ይምረጡ
+3️⃣ ስም፣ ስልክ፣ አድራሻ ይሙሉ
+4️⃣ የመክፈያ አይነት ይምረጡ (ሞባይል ባንክ / እቃው ሲደርስ / Telegram Stars)
+5️⃣ እቃው ሲደርስዎት → /received
+6️⃣ ተሞክሮዎን ደረጃ ለመስጠት → /rate
 
-📞 ችግር ካለ?
-/dispute - ተከሳሽ (ቅሬታ) ያቅርቡ""",
+━━━━━━━━━━━━━━━━
+📞 ችግር ካጋጠመዎት:
+/dispute - ስለ አንድ የተወሰነ ትዕዛዝ ቅሬታ ለማቅረብ
+/contact - ስለ ቦቱ አጠቃላይ ችግር ካለ በቀጥታ ለቦቱ ባለቤት ለመላክ
+
+/cancel - በማንኛውም ሂደት ውስጥ ከሆኑ ለማቋረጥ""",
         "no_store_found": "❌ ሱቅ አልተገኘም። ሊንኩን እንደገና ይሞክሩ።",
         "no_products": "❌ ይህ ሱቅ ገና ምርት የለውም።",
         "already_merchant": "❌ አስቀድመው ሱቅ ከፍተዋል!",
         "register_name": "🏪 ሱቅ ስም?",
         "register_phone": "📞 ስልክ ቁጥር?",
         "register_location": "📍 ቦታ?",
-        "register_payment": "💳 ክፍያ ዝርዝር? (ንግድ ባንክ/ቴሌብር/ወዘተ)",
+        "register_payment": "💳 የሞባይል ባንክ/ቴሌብር ክፍያ ዝርዝርዎ? (ለምሳሌ: CBE Birr - 1000123456 - አበበ በቀለ)",
         "register_product": "📦 የመጀመሪያ ምርት ስም?",
         "register_price": "💵 የ{product} ዋጋ (በብር)?",
+        "register_photo": "📸 የ{product} ፎቶ ይላኩ (ደንበኞች እያዩ ይመርጣሉ)።\n\nፎቶ ከሌልዎት 'ዝለል' ብለው ይጻፉ።",
         "register_success": "🎉 ሱቅ ተከፍቷል!\n\n🔗 ይህን ሊንክ ለደንበኞችዎ ያጋሩ:\n{link}\n\n/addproduct - ተጨማሪ ምርት ለመጨመር\n/mystore - ሊንኩን መልሶ ለማየት",
         "invalid_price": "❌ እባክዎ ቁጥር ብቻ ያስገቡ (ለምሳሌ 250)",
         "addproduct_name": "📦 አዲስ ምርት ስም?",
         "addproduct_price": "💵 ዋጋ (በብር)?",
+        "addproduct_photo": "📸 የምርቱ ፎቶ ይላኩ።\n\nፎቶ ከሌልዎት 'ዝለል' ብለው ይጻፉ።",
         "addproduct_success": "✅ ምርት ተጨምሯል: {product} - {price} ብር",
 
-        "order_select": "🛒 ከ{store} ምርት ይምረጡ:",
+        "order_select": "🛒 ከ«{store}» የፈለጉትን ምርት ፎቶ እያዩ ይምረጡ:",
+        "select_this": "🛒 ይህን ይምረጡ",
         "order_name": "👤 ሙሉ ስምዎ ማን ነው?",
         "order_phone": "📞 ስልክ ቁጥርዎ?",
         "order_address": "📍 አድራሻዎ (ለማድረስ)?",
@@ -126,6 +148,7 @@ TEXTS = {
 📍 አድራሻ: {address}
 
 ትክክል ነው?""",
+        "choose_payment_method": "💳 እንዴት መክፈል ይፈልጋሉ?",
         "order_confirmed": """✅ ትዕዛዝ ተረጋግጧል!
 
 ━━━━━━━━━━━━━━━━
@@ -144,6 +167,20 @@ TEXTS = {
 ❌ ችግር ካጋጠመዎት:
 /dispute ብለው ይጻፉ""",
         "merchant_payment_notify": "💳 ደንበኛ {name} ({phone}) ለትዕዛዝ {order_id} የክፍያ screenshot ልኳል። እባክዎ ያረጋግጡና እቃውን ይላኩ።",
+
+        "pay_cod_confirmed": """✅ ትዕዛዝዎ ተመዝግቧል!
+
+💵 እቃው ሲደርስዎት ብር ይከፍላሉ (Cash on Delivery)።
+🆔 {order_id}
+
+📦 እቃው ሲደርስዎት:
+/received ብለው ይጻፉ""",
+        "merchant_cod_notify": "💵 ይህ ደንበኛ 'እቃው ሲደርስ ብር' (COD) መርጦዋል። ገንዘብ ያለ screenshot ስለሚሆን፣ እቃውን ሲያደርሱ ገንዘቡን በቀጥታ ይቀበሉ።",
+
+        "stars_invoice_desc": "ከ{store} ግዢ",
+        "stars_invoice_sent": "⭐ የ Telegram Stars ክፍያ ተልኳል! እባክዎ ከላይ ያለውን መልእክት ተጫነው ይክፈሉ።",
+        "stars_payment_success": "🎉 በ Telegram Stars ክፍያዎ ተሳክቷል!\n\n🆔 {order_id}\n\n📦 እቃው ሲደርስዎት:\n/received ብለው ይጻፉ",
+        "merchant_stars_notify": "⭐ ደንበኛው በ Telegram Stars ({stars} ⭐) ከፍሏል። እቃውን መላክ ይችላሉ።",
 
         "merchant_notify": """🔔 አዲስ ትዕዛዝ!
 
@@ -176,6 +213,11 @@ TEXTS = {
         "rating_saved": "✅ ደረጃ ተመዝግቧል! አመሰግናለሁ 🙏\n\n📊 የሱቁ አማካይ ደረጃ: {avg} ⭐ ({count} ደረጃዎች)",
         "invalid_rating": "❌ ከ1 እስከ 5 ያለ ቁጥር ብቻ ይላኩ",
 
+        "contact_prompt": "✍️ ስለ ቦቱ ያለዎትን ችግር ወይም አስተያየት ይጻፉ (ፎቶ ማያያዝም ይችላሉ)፣ በቀጥታ ለቦቱ ባለቤት ይደርሳል።",
+        "contact_admin_notify": "📩 አዲስ መልእክት ከተጠቃሚ\n👤 {name} (@{username}, id: {user_id})",
+        "contact_sent": "✅ መልእክትዎ ደርሷል! ቦቱ ባለቤት በቅርቡ ያገኙዎታል።",
+        "contact_unavailable": "⚠️ ይቅርታ፣ ይህ አገልግሎት አሁን አልተዋቀረም። ቆይተው ይሞክሩ።",
+
         "dashboard": """📊 {store}
 
 🛍️ ትዕዛዞች: {orders}
@@ -195,6 +237,14 @@ TEXTS = {
 def t(lang, key, **kwargs):
     text = TEXTS.get(lang, TEXTS["am"]).get(key, f"[{key}]")
     return text.format(**kwargs) if kwargs else text
+
+
+def is_skip(update: Update) -> bool:
+    """True if the user typed something like 'skip' instead of sending a photo."""
+    if update.message.photo:
+        return False
+    txt = (update.message.text or "").strip().lower()
+    return txt in ("ዝለል", "skip", "/skip", "የለም", "none", "no")
 
 
 # ====================== STORAGE ======================
@@ -283,20 +333,18 @@ def get_rating_stats(store_id):
 
 
 # ====================== KEYBOARDS ======================
-def products_keyboard(products):
-    buttons = []
-    for i, prod in enumerate(products):
-        buttons.append([InlineKeyboardButton(
-            f"{prod['name']} - {prod['price']} ብር",
-            callback_data=f"prod_{i}"
-        )])
-    return InlineKeyboardMarkup(buttons)
-
-
 def confirm_keyboard():
     return InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Confirm", callback_data="order_confirm_yes")],
         [InlineKeyboardButton("❌ Cancel", callback_data="order_cancel")],
+    ])
+
+
+def payment_method_keyboard():
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("🏦 የሞባይል ባንክ / ቴሌብር", callback_data="pay_mobile")],
+        [InlineKeyboardButton("💵 እቃው ሲደርስ ብር (COD)", callback_data="pay_cod")],
+        [InlineKeyboardButton("⭐ Telegram Stars", callback_data="pay_stars")],
     ])
 
 
@@ -308,30 +356,35 @@ def orders_keyboard(orders, prefix):
     return InlineKeyboardMarkup(buttons)
 
 
-# ====================== START / DEEP LINK (FIX #1) ======================
+# ====================== START / DEEP LINK ======================
 async def show_store_products(update: Update, context: ContextTypes.DEFAULT_TYPE, store):
-    """Show a specific merchant's products to a visiting customer."""
+    """Show a merchant's products (with photos) to a visiting customer."""
     lang = context.user_data.get("lang", "am")
     products = store.get("products", [])
     if not products:
         await update.message.reply_text(t(lang, "no_products"))
         return
+
     context.user_data["current_store"] = store
-    await update.message.reply_text(
-        t(lang, "order_select", store=store.get("store_name", "")),
-        reply_markup=products_keyboard(products)
-    )
+    await update.message.reply_text(t(lang, "order_select", store=store.get("store_name", "")))
+
+    for i, prod in enumerate(products):
+        caption = f"📦 {prod['name']}\n💵 {prod['price']} ብር"
+        kb = InlineKeyboardMarkup([[InlineKeyboardButton(t(lang, "select_this"), callback_data=f"prod_{i}")]])
+        photo_id = prod.get("photo_file_id")
+        if photo_id:
+            await update.message.reply_photo(photo=photo_id, caption=caption, reply_markup=kb)
+        else:
+            await update.message.reply_text(caption, reply_markup=kb)
 
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """START command — now correctly handles store deep-links."""
+    """START command — correctly handles store deep-links (/start <store_id>)."""
     user = update.effective_user
     lang = context.user_data.setdefault("lang", "am")
 
-    # If a merchant, greet as merchant regardless of args
     merchant_store = get_merchant_store(user.id)
 
-    # FIX: check the deep-link payload (/start <store_id>)
     if context.args:
         store_id = context.args[0]
         store = get_store(store_id)
@@ -351,7 +404,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"🏪 ሱቅ: {merchant_store['store_name']}\n\n"
             f"/dashboard - ስታቲስቲክስ\n"
             f"/myorders - ትዕዛዞች\n"
-            f"/mystore - ሊንክ ያጋሩ"
+            f"/mystore - ሊንክ ያጋሩ\n"
+            f"/addproduct - ምርት ጨምር"
         )
         return
 
@@ -425,7 +479,27 @@ async def reg_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reg_data = context.user_data["reg_data"]
     product_name = reg_data.pop("_pending_product_name")
-    reg_data["products"].append({"name": product_name, "price": price})
+    reg_data["_pending_product"] = {"name": product_name, "price": price}
+
+    await update.message.reply_text(t(lang, "register_photo", product=product_name))
+    return REG_PHOTO
+
+
+# FIX (new): accept a product photo (or 'skip') to finish registration
+async def reg_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "am")
+    reg_data = context.user_data["reg_data"]
+    pending = reg_data.pop("_pending_product")
+
+    if update.message.photo:
+        pending["photo_file_id"] = update.message.photo[-1].file_id
+    elif not is_skip(update):
+        # not a photo and not a recognized "skip" — nudge them, stay in state
+        reg_data["_pending_product"] = pending
+        await update.message.reply_text(t(lang, "register_photo", product=pending["name"]))
+        return REG_PHOTO
+
+    reg_data["products"].append(pending)
 
     store_data = context.user_data.pop("reg_data")
     save_merchant_store(store_data["user_id"], store_data)
@@ -466,13 +540,30 @@ async def addproduct_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "invalid_price"))
         return REG_PRICE
 
+    product_name = context.user_data.pop("_new_product_name")
+    context.user_data["_new_product_pending"] = {"name": product_name, "price": price}
+    await update.message.reply_text(t(lang, "addproduct_photo"))
+    return REG_PHOTO
+
+
+async def addproduct_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "am")
+    pending = context.user_data.get("_new_product_pending")
+
+    if update.message.photo:
+        pending["photo_file_id"] = update.message.photo[-1].file_id
+    elif not is_skip(update):
+        await update.message.reply_text(t(lang, "addproduct_photo"))
+        return REG_PHOTO
+
+    context.user_data.pop("_new_product_pending", None)
+
     user = update.effective_user
     merchant = get_merchant_store(user.id)
-    product_name = context.user_data.pop("_new_product_name")
-    merchant["products"].append({"name": product_name, "price": price})
+    merchant["products"].append(pending)
     save_merchant_store(user.id, merchant)
 
-    await update.message.reply_text(t(lang, "addproduct_success", product=product_name, price=price))
+    await update.message.reply_text(t(lang, "addproduct_success", product=pending["name"], price=pending["price"]))
     return ConversationHandler.END
 
 
@@ -484,14 +575,14 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     store = context.user_data.get("current_store")
     if not store:
-        await query.edit_message_text(t(lang, "error"))
+        await query.message.reply_text(t(lang, "error"))
         return ConversationHandler.END
 
     try:
         prod_idx = int(query.data.replace("prod_", ""))
         product = store["products"][prod_idx]
     except (ValueError, IndexError):
-        await query.edit_message_text(t(lang, "error"))
+        await query.message.reply_text(t(lang, "error"))
         return ConversationHandler.END
 
     context.user_data["order_data"] = {
@@ -500,7 +591,11 @@ async def select_product(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
 
     text = f"📦 {product['name']}\n💵 {product['price']} ብር\n\n{t(lang, 'order_name')}"
-    await query.edit_message_text(text)
+    # the button may be attached to a photo message or a text message
+    if query.message.photo:
+        await query.edit_message_caption(caption=text)
+    else:
+        await query.edit_message_text(text)
     return ORDER_GET_NAME
 
 
@@ -552,18 +647,90 @@ async def order_confirm_callback(update: Update, context: ContextTypes.DEFAULT_T
     order["timestamp"] = datetime.now().isoformat()
     order["order_id"] = f"order_{uuid4().hex[:8]}"
     order["customer_id"] = user.id
-    order["status"] = "awaiting_payment_proof"
+    order["status"] = "awaiting_payment_method"
     save_order(order)
 
-    store = order["store"]
-    text = t(lang, "order_confirmed", payment=store.get("payment_method", "N/A"))
-    text += "\n\n" + t(lang, "order_id", order_id=order["order_id"])
-
-    await query.edit_message_text(text)
-    return ORDER_PAYMENT_PROOF
+    await query.edit_message_text(t(lang, "choose_payment_method"), reply_markup=payment_method_keyboard())
+    return ORDER_PAYMENT_METHOD
 
 
-# FIX #2/#3: accept the payment screenshot and forward it to the merchant
+# NEW: let the customer choose HOW to pay
+async def order_payment_method_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    lang = context.user_data.get("lang", "am")
+
+    order = context.user_data.get("order_data")
+    if not order:
+        await query.edit_message_text(t(lang, "error"))
+        return ConversationHandler.END
+
+    choice = query.data  # pay_mobile | pay_cod | pay_stars
+
+    if choice == "pay_mobile":
+        order["payment_choice"] = "mobile"
+        order["status"] = "awaiting_payment_proof"
+        save_order(order)
+        store = order["store"]
+        text = t(lang, "order_confirmed", payment=store.get("payment_method", "N/A"))
+        text += "\n\n" + t(lang, "order_id", order_id=order["order_id"])
+        await query.edit_message_text(text)
+        return ORDER_PAYMENT_PROOF
+
+    if choice == "pay_cod":
+        order["payment_choice"] = "cod"
+        order["status"] = "cod_confirmed"
+        save_order(order)
+
+        store = order["store"]
+        product = order["product"]
+        notify_text = t(lang, "merchant_notify",
+                         order_id=order["order_id"], product=product["name"], price=product["price"],
+                         name=order["name"], phone=order["phone"], address=order["address"])
+        try:
+            await context.bot.send_message(store["user_id"], notify_text)
+            await context.bot.send_message(store["user_id"], t(lang, "merchant_cod_notify"))
+        except Exception as e:
+            logger.error(f"❌ Notify error: {e}")
+
+        await query.edit_message_text(t(lang, "pay_cod_confirmed", order_id=order["order_id"]))
+        context.user_data.pop("order_data", None)
+        context.user_data.pop("current_store", None)
+        return ConversationHandler.END
+
+    if choice == "pay_stars":
+        order["payment_choice"] = "stars"
+        order["status"] = "awaiting_stars_payment"
+        save_order(order)
+
+        product = order["product"]
+        stars_amount = max(1, round(product["price"] * STARS_RATE))
+        prices = [LabeledPrice(product["name"], stars_amount)]
+
+        try:
+            await context.bot.send_invoice(
+                chat_id=update.effective_user.id,
+                title=product["name"],
+                description=t(lang, "stars_invoice_desc", store=order["store"].get("store_name", "")),
+                payload=order["order_id"],
+                provider_token="",  # empty for Telegram Stars (XTR)
+                currency="XTR",
+                prices=prices,
+            )
+            await query.edit_message_text(t(lang, "stars_invoice_sent"))
+        except Exception as e:
+            logger.error(f"❌ Stars invoice error: {e}")
+            await query.edit_message_text(t(lang, "error"))
+
+        context.user_data.pop("order_data", None)
+        context.user_data.pop("current_store", None)
+        return ConversationHandler.END
+
+    await query.edit_message_text(t(lang, "error"))
+    return ConversationHandler.END
+
+
+# accept the mobile-bank payment screenshot and forward it to the merchant
 async def order_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang = context.user_data.get("lang", "am")
 
@@ -584,7 +751,6 @@ async def order_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE
     store = order["store"]
     product = order["product"]
 
-    # notify merchant with order details
     notify_text = t(lang, "merchant_notify",
                      order_id=order["order_id"],
                      product=product["name"],
@@ -610,13 +776,13 @@ async def order_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE
     return ConversationHandler.END
 
 
-# FIX #4: /received — customer confirms delivery
+# /received — customer confirms delivery
 async def cmd_received(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = context.user_data.get("lang", "am")
 
     orders = [o for o in get_orders_for_customer(user.id)
-              if o.get("status") in ("paid_pending_confirmation", "shipped")]
+              if o.get("status") in ("paid_pending_confirmation", "cod_confirmed", "stars_paid", "shipped")]
 
     if not orders:
         await update.message.reply_text(t(lang, "no_orders_for_user"))
@@ -664,7 +830,41 @@ async def _mark_received(update, context, order, from_callback=False):
         await update.message.reply_text(text)
 
 
-# ====================== DISPUTE FLOW (FIX #4/#2 photo) ======================
+# ====================== TELEGRAM STARS PAYMENT HANDLERS ======================
+async def precheckout_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Must answer within 10s. We approve every pre-checkout for now."""
+    query = update.pre_checkout_query
+    await query.answer(ok=True)
+
+
+async def successful_payment_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "am")
+    payment = update.message.successful_payment
+    order_id = payment.invoice_payload
+    order = get_order(order_id)
+    if not order:
+        logger.error(f"❌ Successful payment for unknown order {order_id}")
+        return
+
+    order["status"] = "stars_paid"
+    order["stars_amount"] = payment.total_amount
+    save_order(order)
+
+    store = order["store"]
+    product = order["product"]
+    try:
+        notify_text = t(lang, "merchant_notify",
+                         order_id=order["order_id"], product=product["name"], price=product["price"],
+                         name=order["name"], phone=order["phone"], address=order["address"])
+        await context.bot.send_message(store["user_id"], notify_text)
+        await context.bot.send_message(store["user_id"], t(lang, "merchant_stars_notify", stars=payment.total_amount))
+    except Exception as e:
+        logger.error(f"❌ Notify error: {e}")
+
+    await update.message.reply_text(t(lang, "stars_payment_success", order_id=order["order_id"]))
+
+
+# ====================== DISPUTE FLOW ======================
 async def dispute_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = context.user_data.get("lang", "am")
@@ -808,6 +1008,36 @@ async def rate_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
+# ====================== CONTACT BOT OWNER ======================
+async def contact_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "am")
+    if not ADMIN_ID:
+        await update.message.reply_text(t(lang, "contact_unavailable"))
+        return ConversationHandler.END
+    await update.message.reply_text(t(lang, "contact_prompt"))
+    return CONTACT_MESSAGE
+
+
+async def contact_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    lang = context.user_data.get("lang", "am")
+    user = update.effective_user
+    caption = update.message.text or update.message.caption or ""
+
+    try:
+        header = t(lang, "contact_admin_notify",
+                   name=user.first_name or "-", username=user.username or "-", user_id=user.id)
+        await context.bot.send_message(ADMIN_ID, header)
+        if update.message.photo:
+            await context.bot.send_photo(ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption)
+        elif caption:
+            await context.bot.send_message(ADMIN_ID, caption)
+    except Exception as e:
+        logger.error(f"❌ Contact-admin error: {e}")
+
+    await update.message.reply_text(t(lang, "contact_sent"))
+    return ConversationHandler.END
+
+
 # ====================== MERCHANT COMMANDS ======================
 async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -820,7 +1050,7 @@ async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     orders = get_orders_for_store(merchant["store_id"])
     revenue = sum(o.get("product", {}).get("price", 0) for o in orders
-                  if o.get("status") in ("paid_pending_confirmation", "delivered"))
+                  if o.get("status") in ("paid_pending_confirmation", "cod_confirmed", "stars_paid", "delivered"))
     avg, count = get_rating_stats(merchant["store_id"])
 
     text = t(lang, "dashboard",
@@ -871,7 +1101,7 @@ async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 
-# ====================== ADMIN (FIX #5) ======================
+# ====================== ADMIN ======================
 def _is_admin(user_id):
     return ADMIN_ID and user_id == ADMIN_ID
 
@@ -963,6 +1193,7 @@ async def main():
             REG_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_payment)],
             REG_PRODUCT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product)],
             REG_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_price)],
+            REG_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, reg_photo)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False,
@@ -973,6 +1204,7 @@ async def main():
         states={
             REG_PRODUCT: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_name)],
             REG_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_price)],
+            REG_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, addproduct_photo)],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
         per_message=False,
@@ -985,6 +1217,7 @@ async def main():
             ORDER_GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_phone)],
             ORDER_GET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_address)],
             ORDER_CONFIRM: [CallbackQueryHandler(order_confirm_callback, pattern="^order_")],
+            ORDER_PAYMENT_METHOD: [CallbackQueryHandler(order_payment_method_callback, pattern="^pay_")],
             ORDER_PAYMENT_PROOF: [
                 MessageHandler(filters.PHOTO, order_payment_proof),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, order_payment_proof),
@@ -1018,6 +1251,15 @@ async def main():
         per_message=False,
     )
 
+    contact_conv = ConversationHandler(
+        entry_points=[CommandHandler("contact", contact_start)],
+        states={
+            CONTACT_MESSAGE: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, contact_message)],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
+    )
+
     # Core commands
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
@@ -1037,9 +1279,14 @@ async def main():
     app.add_handler(order_conv)
     app.add_handler(dispute_conv)
     app.add_handler(rate_conv)
+    app.add_handler(contact_conv)
 
     # Standalone callback for /received selection list
     app.add_handler(CallbackQueryHandler(received_callback, pattern="^received_"))
+
+    # Telegram Stars payment flow
+    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
 
     await app.initialize()
 
