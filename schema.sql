@@ -1,8 +1,3 @@
--- ==========================================================
--- Telegram Shop Bot — Supabase schema
--- Run this once in Supabase → SQL Editor → New query → Run
--- ==========================================================
-
 create table if not exists merchants (
     user_id         bigint primary key,
     username        text,
@@ -48,15 +43,5 @@ create table if not exists ratings (
     scores      jsonb default '[]'::jsonb
 );
 
--- Helpful indexes
 create index if not exists idx_orders_customer_id on orders (customer_id);
 create index if not exists idx_orders_store_id on orders ((store->>'store_id'));
-
--- Row Level Security: the bot connects with the SERVICE ROLE key
--- (not the anon key), which bypasses RLS. If you enable RLS on
--- these tables for extra safety, no additional policies are
--- required as long as SUPABASE_KEY is the service_role key.
--- alter table merchants enable row level security;
--- alter table orders enable row level security;
--- alter table disputes enable row level security;
--- alter table ratings enable row level security;
