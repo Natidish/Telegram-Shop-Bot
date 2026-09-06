@@ -1308,28 +1308,32 @@ async def main():
     app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
 
-    await app.initialize()
-
     if RENDER_EXTERNAL_URL:
         logger.info("🌐 Starting webhook mode")
         async with app:
             await app.bot.set_webhook(url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
             await app.start()
-            await app.updater.start_webhook(
-                listen="0.0.0.0",
-                port=PORT,
-                url_path=BOT_TOKEN,
-                webhook_url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
-            )
-            logger.info("✅ Bot running (webhook mode)")
-            await asyncio.Event().wait()
+            try:
+                await app.updater.start_webhook(
+                    listen="0.0.0.0",
+                    port=PORT,
+                    url_path=BOT_TOKEN,
+                    webhook_url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
+                )
+                logger.info("✅ Bot running (webhook mode)")
+                await asyncio.Event().wait()
+            finally:
+                await app.stop()
     else:
         logger.info("📱 Starting polling mode")
         async with app:
             await app.start()
-            await app.updater.start_polling()
-            logger.info("✅ Bot running (polling mode)")
-            await asyncio.Event().wait()
+            try:
+                await app.updater.start_polling()
+                logger.info("✅ Bot running (polling mode)")
+                await asyncio.Event().wait()
+            finally:
+                await app.stop()
 
 
 if __name__ == "__main__":
