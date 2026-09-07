@@ -1,90 +1,144 @@
-# Multi-Tenant Telegram Shop Bot — Setup መመሪያ
+# 📚 የቴሌግራም ሱቅ ቦት ሙሉ መመሪያ
 
-ይህ ቦት **ብዙ ነጋዴዎች በ1 ቦት** እንዲጠቀሙ የተዘጋጀ ነው። እያንዳንዱ ነጋዴ `/register` ብሎ የራሱን ስቶር ይከፍታል እና የራሱ unique link ያገኛል። ደንበኞች ያንኑ link ሲጫኑ ቀጥታ ወደ እርሱ ስቶር menu ይገባሉ።
-
-## ፋይሎች
-- `bot.py` — ሁሉም bot logic (registration, order, menu...)
-- `storage.py` — stores.json / orders.json ላይ የሚፅፍ/የሚያነብ ቀላል data layer
-- `requirements.txt` — dependencies
+ይህ ቦት ማንኛውም ነጋዴ የራሱን ትንሽ ሱቅ በቴሌግራም በኩል ከፍቶ እቃ እንዲሸጥ፣ እና ደንበኞች የምርት ፎቶ እያዩ በቀላሉ አዘው እንዲገዙ የሚያግዝ ነው። ምንም ተጨማሪ አፕሊኬሽን ወይም ድህረ ገጽ አያስፈልግም — ሁሉም ነገር በቴሌግራም ውስጥ ነው የሚሆነው።
 
 ---
 
-## 1. Bot Token ማግኘት
-1. Telegram ላይ **@BotFather** ን ያናግሩ
-2. `/newbot` ይላኩ
-3. የሚሰጥዎትን **token** ይቅዱ
+## 👨‍🏪 ክፍል 1: ለነጋዴዎች
 
-ይህ ቦት ለ*ብዙ ነጋዴዎች* ስለሆነ **OWNER_CHAT_ID አያስፈልግም** — እያንዳንዱ ነጋዴ ሲመዘገብ የራሱ Telegram ID በራስ-ሰር ይያያዛል።
+### 1.1 ሱቅ መክፈት — `/register`
+
+ቦቱን ከፍተው `/register` ብለው ይጻፉ። ቦቱ በቅደም ተከተል የሚከተሉትን ይጠይቅዎታል፦
+
+1. **የሱቅ ስም** — ደንበኞች የሚያዩት ስም (ለምሳሌ "ናቲ ጫማ ቤት")
+2. **ስልክ ቁጥር** — ደንበኞች ወይም ቦቱ የሚጠቀሙበት
+3. **ቦታ** — ሱቁ የሚገኝበት አካባቢ
+4. **የክፍያ ዝርዝር** — የሞባይል ባንክ/ቴሌብር አካውንት (ለምሳሌ "CBE Birr - 1000123456 - አበበ በቀለ")
+5. **የመጀመሪያ ምርት ስም**
+6. **የምርቱ ዋጋ** (በብር፣ ቁጥር ብቻ)
+7. **የምርቱ ፎቶ** — ደንበኞች እያዩ ይመርጣሉ (ፎቶ ከሌልዎት "ዝለል" ብለው መጻፍ ይችላሉ)
+
+ከጨረሱ በኋላ ቦቱ ለሱቅዎ **ልዩ ሊንክ** (unique link) ይሰጥዎታል። ያንን ሊንክ ብቻ ነው ለደንበኞችዎ የሚያጋሩት (በFacebook፣ Telegram groups፣ Status ወዘተ)።
+
+⚠️ አንድ ሰው በአንድ Telegram አካውንት አንድ ሱቅ ብቻ ነው መክፈት የሚችለው።
+
+### 1.2 ተጨማሪ ምርት መጨመር — `/addproduct`
+
+ከመጀመሪያ ምዝገባ በኋላ ማንኛውም ጊዜ `/addproduct` ብለው ተጨማሪ ምርት (ስም + ዋጋ + ፎቶ) መጨመር ይችላሉ። ምርቶች ብዛት ገደብ የላቸውም።
+
+### 1.3 የሱቅ ሊንክ ማግኘት — `/mystore`
+
+ሊንኩን ረስተውት ወይም ደግመው ማጋራት ካስፈለገዎት `/mystore` ብለው ይጻፉ።
+
+### 1.4 ትዕዛዞችን መመልከት — `/myorders`
+
+ደንበኞች ያዘዙትን ሁሉ (ምርት፣ ዋጋ፣ ስም፣ ስልክ፣ ሁኔታ/status) በዝርዝር ያሳይዎታል።
+
+### 1.5 ስታቲስቲክስ — `/dashboard`
+
+የሱቅዎን አጠቃላይ ገቢ፣ የትዕዛዞች ብዛት፣ የምርቶች ብዛት እና አማካይ ደረጃ (rating) ያሳይዎታል።
+
+### 1.6 አዲስ ትዕዛዝ ሲመጣ ምን ይሆናል?
+
+ደንበኛ ትዕዛዝ ባደረገ ቁጥር ቦቱ በራስ-ሰር የደንበኛውን ሙሉ መረጃ (ስም፣ ስልክ፣ አድራሻ፣ የመረጠው ምርት) በቀጥታ ወደ እርስዎ (ነጋዴው) ይልካል። ደንበኛው የመረጠው የመክፈያ አይነት እንደሚከተለው ይለያያል፦
+
+- **🏦 ሞባይል ባንክ/ቴሌብር** ከመረጠ → ደንበኛው የክፍያ screenshot ይልክልዎታል፣ ያንን አረጋግጠው እቃውን ይላኩ
+- **💵 እቃው ሲደርስ ብር (Cash on Delivery)** ከመረጠ → ምንም screenshot የለም፤ እቃውን ሲያደርሱ በቀጥታ ገንዘቡን ከደንበኛው ይቀበላሉ
+- **⭐ Telegram Stars** ከመረጠ → ደንበኛው በ Telegram's own payment system ይከፍላል፣ ክፍያው ሲሳካ ወዲያውኑ ይነገርዎታል
+
+### 1.7 ደንበኛ ቅሬታ ካቀረበ
+
+ደንበኛ ችግር ካጋጠመው (እቃ ካልደረሰ፣ የተለየ እቃ ከደረሰ ወዘተ) `/dispute` ተጠቅሞ ቅሬታ ሲያቀርብ፣ **ቅሬታው በቀጥታ ወደ እርስዎ (ነጋዴው)** ይላካል — ስም፣ ስልክ፣ ምክንያት እና ካለ ማስረጃ ፎቶ ጭምር። እባክዎ በተቻለ ፍጥነት ደንበኛውን ያነጋግሩ።
 
 ---
 
-## 2. Render ላይ Deploy ማድረግ (Free Web Service)
+## 👥 ክፍል 2: ለደንበኞች
 
-ይህ ቦት **webhook mode** ይጠቀማል (ፓysorт polling ሳይሆን) ስለዚህ Render free **Web Service** ላይ በትክክል ይሰራል (Background Worker ክፍያ ስለሚጠይቅ አያስፈልግም)።
+### 2.1 እንዴት ማዘዝ እንደሚቻል
 
-### Render Dashboard ላይ:
-| Setting | Value |
+1. ነጋዴው የላከልዎትን ሊንክ ይንኩ
+2. የቀረቡትን ምርቶች ፎቶ እያዩ የፈለጉትን ይምረጡ (🛒 "ይህን ይምረጡ" የሚለውን ቁልፍ ይጫኑ)
+3. ሙሉ ስምዎን ይላኩ
+4. ስልክ ቁጥርዎን ይላኩ
+5. ማድረሻ አድራሻዎን ይላኩ
+6. ትዕዛዝዎን ያረጋግጡ (✅ Confirm)
+7. የመክፈያ አይነት ይምረጡ:
+   - **🏦 ሞባይል ባንክ/ቴሌብር**፦ ነጋዴው የሰጠውን ቁጥር ገንዘብ ይላኩ፣ ከዛ የ screenshot ፎቶ ወደ ቦቱ ይላኩ
+   - **💵 እቃው ሲደርስ ብር**፦ ምንም መክፈል አያስፈልግም አሁን፤ እቃው ሲደርስዎት በእጅ ይከፍላሉ
+   - **⭐ Telegram Stars**፦ ቦቱ የሚልክልዎትን የክፍያ መልእክት ተጭነው በ Telegram Stars ይክፈሉ
+
+### 2.2 እቃው ሲደርስዎት — `/received`
+
+እቃው በትክክል ከደረስዎት `/received` ብለው ይጻፉ። ይህ ነጋዴውን ያሳውቀዋል፣ እና ተሞክሮዎን ደረጃ (rating) እንዲሰጡ ይጋብዝዎታል።
+
+### 2.3 ደረጃ መስጠት — `/rate`
+
+ከ1 እስከ 5 ኮከብ በመስጠት ስለ ግዢዎ ተሞክሮ አስተያየት ይስጡ። ይህ ወደፊት ሌሎች ደንበኞች ነጋዴውን እንዲያምኑ ይረዳል።
+
+### 2.4 ችግር ካጋጠመዎት — `/dispute`
+
+እቃ ካልደረስዎት፣ የተለየ/የተበላሸ እቃ ከደረስዎት፣ ወይም ማንኛውም ችግር ካጋጠመዎት `/dispute` ብለው ይጻፉ፦
+
+1. ምን እንደተፈጠረ በዝርዝር ይግለጹ
+2. ካለዎት ማስረጃ (ፎቶ) ይላኩ፣ ከሌለ "የለም" ብለው ይጻፉ
+
+ቅሬታዎ **በቀጥታ ወደ ነጋዴው** ይደርሳል፤ ነጋዴውም ሆነ (ካለ) ቦቱ ባለቤት ችግሩን እንዲፈቱ ያግዛሉ።
+
+### 2.5 ስለ ቦቱ ጥያቄ/ቅሬታ ካለዎት — `/contact`
+
+ስለ አንድ የተወሰነ ትዕዛዝ ሳይሆን ስለ ቦቱ አጠቃላይ ጥያቄ፣ አስተያየት ወይም ችግር ካለዎት `/contact` ብለው ይጻፉ፤ በቀጥታ ወደ ቦቱ ባለቤት ይደርሳል።
+
+---
+
+## 📋 ክፍል 3: የትዕዛዞች ሁኔታ (Order Status) ማብራሪያ
+
+| Status | ትርጉም |
 |---|---|
-| Service Type | **Web Service** |
-| Build Command | `pip install -r requirements.txt` |
-| Start Command | `python bot.py` |
-| Environment Variable | `BOT_TOKEN` = የራስዎ token |
-
-**`RENDER_EXTERNAL_URL` ን እጅ መንካት አያስፈልግም** — Render ራሱ ለ Web Service በራስ-ሰር ይፈጥረዋል፣ ኮዱም ራሱ ይህን አውቆ ወደ webhook mode ይቀየራል።
-
-### Deploy ካደረጉ በኋላ
-Render ሎግ ላይ ይህን ካዩ ስራ ላይ ነው፡
-```
-🌐 Webhook mode ላይ በ Render እየጀመረ ነው → https://your-app.onrender.com
-```
-
-### ⚠️ አንድ ጠንቃቃ ነጥብ — Free Tier "Spin Down"
-Render free Web Service ለ15 ደቂቃ ምንም ጥቅም ካላገኘ "ይተኛል" (spin down)፣ ቀጥሎ የሚመጣ ጥያቄ ሲደርሰው ለ30-60 ሰከንድ ያህል ዘግይቶ ይነሳል (cold start)። ይህ ለ pilot/ሙከራ ደረጅ ችግር አይፈጥርም፣ ነገር ግን ለነጋዴ ጥሩ ልምድ እንዲሰጥ ከፈለጉ፡
-- **UptimeRobot** (ነፃ) በመጠቀም ቦቱን በየ10 ደቂቃ ping ቢያደርጉት ሁል ጊዜ "ነቅቶ" ይቆያል (750 free hours/month ስላለ ለ1 service ያስኪደው ይበቃል)
-- ወይም ለቁም ነገር ስራ ላይ ሲደርሱ Render's paid tier ($7/month) ላይ መሄድ - cold start ሙሉ በሙሉ ያስቀራል
+| `awaiting_payment_method` | ደንበኛው የመክፈያ አይነት እየመረጠ ነው |
+| `awaiting_payment_proof` | ደንበኛው mobile bank መርጦ screenshot እየጠበቅን ነው |
+| `paid_pending_confirmation` | ደንበኛው screenshot ልኳል፣ ነጋዴው ማረጋገጥ አለበት |
+| `cod_confirmed` | ደንበኛው "እቃው ሲደርስ ብር" መርጦ ትዕዛዙ ተረጋግጧል |
+| `awaiting_stars_payment` | Telegram Stars ክፍያ እየተጠበቀ ነው |
+| `stars_paid` | Telegram Stars ክፍያ ተሳክቷል |
+| `delivered` | ደንበኛው `/received` ብሎ እቃው መድረሱን አረጋግጧል |
 
 ---
 
-## 3. Local ላይ ሙከራ
+## 🔑 ክፍል 4: ትዕዛዞች ማጠቃለያ (Command Cheat Sheet)
 
-```bash
-pip install -r requirements.txt
-export BOT_TOKEN="የራስዎ_token"
-python bot.py
-```
+**ለነጋዴ ብቻ**
+- `/register` — ሱቅ ክፈት
+- `/addproduct` — ምርት ጨምር
+- `/mystore` — የሊንክ ማግኛ
+- `/myorders` — ትዕዛዞችን ተመልከት
+- `/dashboard` — ስታቲስቲክስ
 
-`RENDER_EXTERNAL_URL` ስለሌለ ኮዱ ራሱ ወደ **polling mode** ይቀየራል — local ሙከራ ላይ webhook ማዋቀር አያስፈልግም።
+**ለሁሉም ተጠቃሚ**
+- `/start` — ቦቱን ጀምር / ሱቅ ክፈት
+- `/help` — እርዳታ አሳይ
+- `/received` — እቃ መድረሱን አረጋግጥ
+- `/rate` — ደረጃ ስጥ
+- `/dispute` — ቅሬታ አቅርብ
+- `/contact` — ወደ ቦቱ ባለቤት መልእክት ላክ
+- `/cancel` — በማንኛውም ሂደት ውስጥ ካሉ ለማቋረጥ
 
----
-
-## 4. ነጋዴ እንዴት ይጠቀማል (Onboarding Flow)
-
-| Command | ምን ያደርጋል |
-|---|---|
-| `/register` | አዲስ ስቶር መክፈት (ስም → ስልክ → ቦታ → ምርቶች) |
-| `/mystore` | የስቶር መረጃ + የራስዎ unique customer link ማየት |
-| `/addproduct` | ተጨማሪ ምርት መጨመር |
-| `/removeproduct` | ምርት ማስወገድ |
-| `/myorders` | የቅርብ ጊዜ ትዕዛዞችን ማየት |
-
-ምሳሌ ሂደት፡
-1. ነጋዴ ቦቱን ያገኛል → `/register` → ስም/ስልክ/ቦታ/ምርቶች ይሞላል
-2. ቦቱ ይህን ይመልሳል፡ `https://t.me/YourBot?start=store_123456789`
-3. ነጋዴው ይህን link በ Telegram channel/Facebook ላይ ያጋራል
-4. ደንበኛ link ይጫናል → ቀጥታ የእርሱን ስቶር menu ያያል → ያዛል
-5. ትዕዛዙ ለነጋዴው ስልክ/Telegram ላይ notification ይደርሰዋል
+**ለቦቱ ባለቤት ብቻ (Admin)**
+- `/admin_merchants` — ሁሉንም ነጋዴዎች ተመልከት
+- `/admin_orders` — ሁሉንም ትዕዛዞች ተመልከት
+- `/admin_help` — የ admin ትዕዛዞች ዝርዝር
 
 ---
 
-## 5. Data የት ይቀመጣል?
+## ⚙️ ክፍል 5: ለቦቱ ባለቤት (Technical Owner) ማወቅ ያለብዎት
 
-`stores.json` እና `orders.json` በራስ-ሰር ይፈጠራሉ። **ጠንቃቃ ይሁኑ፡** Render free Web Service እንደገና deploy ሲደረግ (ለምሳሌ ኮድ ቀይረው ሲገፉ) disk-ላይ ያሉ ፋይሎች ሊጠፉ ይችላሉ (ephemeral filesystem)። ለ pilot ደረጅ ችግር የለውም፣ ለ production ግን፡
-- Render's **Persistent Disk** ($ ይከፈላል) መጠቀም፣ ወይም
-- ወደ real database (PostgreSQL — Render free tier 30 ቀን ነፃ አለው) መቀየር ይመከራል
-
-ይህን ክፍል ስትደርስ ንገረኝ — የ database migration ኮድ ላዘጋጅልህ።
+- ዳታ (ሱቆች፣ ትዕዛዞች፣ ደረጃዎች) የሚቀመጠው `bot_data/` ፎልደር ውስጥ JSON ፋይሎች ላይ ነው። ምንም database አያስፈልግም።
+- ⚠️ Render free tier disk **ጊዜያዊ** ስለሆነ፣ ቦቱ redeploy/restart በተደረገ ቁጥር ዳታው ይጠፋል። ለቋሚ ንግድ ስራ database (እንደ Supabase) መጠቀም ይመከራል።
+- `ADMIN_ID` የተባለውን environment variable በ Render → Environment ውስጥ ካስቀመጡ (የራስዎ Telegram numeric user ID)፣ የ`/admin_*` ትዕዛዞችን መጠቀም ይችላሉ እና ለተጨማሪ ክትትል የ dispute/contact መልእክቶች ቅጂ ይደርስዎታል። የራስዎን Telegram ID ለማወቅ @userinfobot ን ቦት ላይ ያናግሩ።
+- `STARS_RATE` የተባለ environment variable (ነባሪ 1) የብር-ወደ-Stars ምንዛሪን ይቆጣጠራል።
 
 ---
+
+💡 **ጠቃሚ ምክር ለነጋዴዎች**፦ ትክክለኛ እና ግልጽ የምርት ፎቶ ማስቀመጥ ደንበኛ በፍጥነት እንዲወስን ይረዳል። ዋጋዎችን ወቅታዊ ለማድረግ ካስፈለገ በአሁኑ ጊዜ አዲስ ምርት ብቻ መጨመር ይቻላል (የነባር ምርት ዋጋ ማስተካከል ካስፈለገ ይንገሩኝ፣ ተጨማሪ ትዕዛዝ (`/editproduct`) ልጨምርልዎት እችላለሁ)።
 
 ## 6. ቀጣይ ሊጨመሩ የሚችሉ ፊቸሮች
 - 💳 Chapa payment integration (ትዕዛዝ ላይ ቀጥታ ክፍያ)
