@@ -1,36 +1,31 @@
 """
-🎊 TELEGRAM SHOP BOT — v4 (Supabase storage)
+🎊 TELEGRAM SHOP BOT — v3 (No database — JSON file storage)
 ========================================================
-በዚህ ስሪት ላይ የተጨመሩ/የተስተካከሉ ነገሮች:
-
 1. ✅ የነጋዴ ሱቅ ሊንክ ትክክል ነው የሚሰራው (deep-link fix)
 2. ✅ ፎቶ (screenshot) መቀበል ስራ ላይ ውሏል
 3. ✅ ትዕዛዝ ከተረጋገጠ በኋላ የክፍያ screenshot ይጠየቃል
 4. ✅ /received - ደንበኛው እቃው እንደደረሰው ያረጋግጣል
 5. ✅ /dispute እና /rate ሙሉ በሙሉ ተተግብረዋል
 6. ✅ Admin/Owner ትዕዛዝ (/admin_merchants, /admin_orders)
------------------------- አዲስ (v3) ------------------------
-7. 🆕 ነጋዴ ለእያንዳንዱ ምርት ፎቶ መጨመር ይችላል (/register እና /addproduct)
+7. ✅ ነጋዴ ለእያንዳንዱ ምርት ፎቶ መጨመር ይችላል (/register እና /addproduct)
    ደንበኞችም የምርቱን ፎቶ አይተው ነው የሚመርጡት
-8. 🆕 /help የበለጠ ሰፊ እና ግልጽ ማብራሪያ ይሰጣል
-9. 🆕 /contact - ስለ ቦቱ ችግር ካለ በቀጥታ ወደ bot owner መልእክት ይልካል
-10. 🆕 ትዕዛዝ ከተረጋገጠ በኋላ ደንበኛው የመክፈያ አይነት ይመርጣል:
+8. ✅ /help የበለጠ ሰፊ እና ግልጽ ማብራሪያ ይሰጣል
+9. ✅ /contact - ስለ ቦቱ ችግር ካለ በቀጥታ ወደ bot owner መልእክት ይልካል
+10. ✅ ትዕዛዝ ከተረጋገጠ በኋላ ደንበኛው የመክፈያ አይነት ይመርጣል:
     🏦 የሞባይል ባንክ / ቴሌብር (screenshot በመላክ)
     💵 እቃው ሲደርስ ብር (Cash on Delivery)
     ⭐ Telegram Stars
------------------------- አዲስ (v4) ------------------------
-11. 🆕 ዳታ ከJSON ፋይል ወደ Supabase (Postgres) ተቀይሯል — ስለዚህ ቦቱ
-    ሲሪስታርት (ለምሳሌ Render free tier ላይ) ዳታ አይጠፋም
 
-⚠️ ከመጀመርዎ በፊት:
-   1. schema.sql ውስጥ ያለውን SQL በ Supabase → SQL Editor ውስጥ ያስሩ
-   2. SUPABASE_URL እና SUPABASE_KEY የተባሉ environment variable ያዘጋጁ
-   3. requirements.txt ውስጥ ያለውን `supabase` ፓኬጅ ይጫኑ
+⚠️ ማሳሰቢያ፦ ዳታ የሚቀመጠው bot_data/ ፎልደር ውስጥ JSON ፋይሎች ላይ ነው።
+   ማንኛውም database አያስፈልግም — ቦቱ ራሱ ችሎ ይሰራል። ነገር ግን Render
+   free tier ላይ disk ጊዜያዊ (ephemeral) ስለሆነ፣ ቦቱ ሲሪስታርት ወይም
+   redeploy ሲደረግ የተከማቸው ዳታ ሊጠፋ ይችላል።
 """
 
 import logging
 import os
 import asyncio
+import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -45,7 +40,6 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from supabase import create_client, Client
 
 # ====================== SETUP ======================
 logging.basicConfig(
@@ -65,14 +59,10 @@ ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 # variables if you want a different rate (e.g. STARS_RATE=0.5).
 STARS_RATE = float(os.environ.get("STARS_RATE", "1"))
 
-SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("❌ SUPABASE_URL / SUPABASE_KEY not set!")
+STORAGE_DIR = "bot_data"
+os.makedirs(STORAGE_DIR, exist_ok=True)
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-
-logger.info("✅ Bot initialized - All systems ready (Supabase storage)")
+logger.info("✅ Bot initialized - All systems ready (JSON file storage)")
 
 # ====================== CONVERSATION STATES ======================
 # REGISTRATION (also reused by the /addproduct flow)
@@ -259,47 +249,58 @@ def is_skip(update: Update) -> bool:
     return txt in ("ዝለል", "skip", "/skip", "የለም", "none", "no")
 
 
-# ====================== STORAGE (Supabase) ======================
-# Tables expected (see schema.sql): merchants, orders, disputes, ratings
-def _safe_execute(query, default=None):
-    try:
-        res = query.execute()
-        return res.data
-    except Exception as e:
-        logger.error(f"❌ Supabase error: {e}")
-        return default
+# ====================== STORAGE (JSON files — no database) ======================
+def save_json(filename, data):
+    path = os.path.join(STORAGE_DIR, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+def load_json(filename):
+    path = os.path.join(STORAGE_DIR, filename)
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return None
 
 
 def get_merchant_store(user_id):
-    data = _safe_execute(
-        supabase.table("merchants").select("*").eq("user_id", user_id), default=[]
-    )
-    return data[0] if data else None
+    return load_json(f"merchant_{user_id}.json")
 
 
 def save_merchant_store(user_id, store_data):
-    row = dict(store_data)
-    row["user_id"] = user_id
-    _safe_execute(supabase.table("merchants").upsert(row, on_conflict="user_id"))
+    save_json(f"merchant_{user_id}.json", store_data)
 
 
 def get_store(store_id):
     if not store_id:
         return None
-    data = _safe_execute(
-        supabase.table("merchants").select("*").eq("store_id", store_id), default=[]
-    )
-    return data[0] if data else None
+    for file in os.listdir(STORAGE_DIR):
+        if file.startswith("merchant_") and file.endswith(".json"):
+            store = load_json(file)
+            if store and store.get("store_id") == store_id:
+                return store
+    return None
 
 
 def get_all_merchants():
-    return _safe_execute(supabase.table("merchants").select("*"), default=[]) or []
+    merchants = []
+    for file in os.listdir(STORAGE_DIR):
+        if file.startswith("merchant_") and file.endswith(".json"):
+            store = load_json(file)
+            if store:
+                merchants.append(store)
+    return merchants
 
 
 def get_all_orders():
-    return _safe_execute(
-        supabase.table("orders").select("*").order("timestamp"), default=[]
-    ) or []
+    orders = []
+    for file in os.listdir(STORAGE_DIR):
+        if file.startswith("order_") and file.endswith(".json"):
+            order = load_json(file)
+            if order:
+                orders.append(order)
+    return orders
 
 
 def get_orders_for_store(store_id):
@@ -307,46 +308,31 @@ def get_orders_for_store(store_id):
 
 
 def get_orders_for_customer(user_id):
-    return _safe_execute(
-        supabase.table("orders").select("*").eq("customer_id", user_id), default=[]
-    ) or []
+    return [o for o in get_all_orders() if o.get("customer_id") == user_id]
 
 
 def save_order(order):
-    row = dict(order)
-    _safe_execute(supabase.table("orders").upsert(row, on_conflict="order_id"))
+    save_json(f"{order['order_id']}.json", order)
 
 
 def get_order(order_id):
-    data = _safe_execute(
-        supabase.table("orders").select("*").eq("order_id", order_id), default=[]
-    )
-    return data[0] if data else None
+    return load_json(f"{order_id}.json")
 
 
 def save_dispute(dispute):
-    _safe_execute(supabase.table("disputes").insert(dict(dispute)))
+    save_json(f"{dispute['dispute_id']}.json", dispute)
 
 
 def save_rating(store_id, score):
-    data = _safe_execute(
-        supabase.table("ratings").select("*").eq("store_id", store_id), default=[]
-    )
-    if data:
-        scores = data[0].get("scores") or []
-        scores.append(score)
-        _safe_execute(supabase.table("ratings").update({"scores": scores}).eq("store_id", store_id))
-    else:
-        _safe_execute(supabase.table("ratings").insert({"store_id": store_id, "scores": [score]}))
+    ratings = load_json(f"ratings_{store_id}.json") or {"scores": []}
+    ratings["scores"].append(score)
+    save_json(f"ratings_{store_id}.json", ratings)
+    return ratings
 
 
 def get_rating_stats(store_id):
-    data = _safe_execute(
-        supabase.table("ratings").select("*").eq("store_id", store_id), default=[]
-    )
-    if not data:
-        return 0.0, 0
-    scores = data[0].get("scores") or []
+    ratings = load_json(f"ratings_{store_id}.json") or {"scores": []}
+    scores = ratings.get("scores", [])
     if not scores:
         return 0.0, 0
     return round(sum(scores) / len(scores), 1), len(scores)
