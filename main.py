@@ -11,7 +11,7 @@
 6. ✅ Admin/Owner ትዕዛዝ (/admin_merchants, /admin_orders)
 ------------------------ አዲስ (v3) ------------------------
 7. 🆕 ነጋዴ ለእያንዳንዱ ምርት ፎቶ መጨመር ይችላል (/register እና /addproduct)
-   ደንበኞችም የምርቱን ፎቶ አይተው ነው የሚመርጡት
+    ደንበኞችም የምርቱን ፎቶ አይተው ነው የሚመርጡት
 8. 🆕 /help የበለጠ ሰፊ እና ግልጽ ማብራሪያ ይሰጣል
 9. 🆕 /contact - ስለ ቦቱ ችግር ካለ በቀጥታ ወደ bot owner መልእክት ይልካል
 10. 🆕 ትዕዛዝ ከተረጋገጠ በኋላ ደንበኛው የመክፈያ አይነት ይመርጣል:
@@ -23,9 +23,9 @@
     ሲሪስታርት (ለምሳሌ Render free tier ላይ) ዳታ አይጠፋም
 
 ⚠️ ከመጀመርዎ በፊት:
-   1. schema.sql ውስጥ ያለውን SQL በ Supabase → SQL Editor ውስጥ ያስሩ
-   2. SUPABASE_URL እና SUPABASE_KEY የተባሉ environment variable ያዘጋጁ
-   3. requirements.txt ውስጥ ያለውን `supabase` ፓኬጅ ይጫኑ
+    1. schema.sql ውስጥ ያለውን SQL በ Supabase → SQL Editor ውስጥ ያስሩ
+    2. SUPABASE_URL እና SUPABASE_KEY የተባሉ environment variable ያዘጋጁ
+    3. requirements.txt ውስጥ ያለውን `supabase` ፓኬጅ ይጫኑ
 """
 
 import logging
@@ -403,11 +403,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     lang = context.user_data.setdefault("lang", "am")
 
-    merchant_store = get_merchant_store(user.id)
-
+    # 1. Parameter ካለ (ደንበኛው በሱቅ ሊንክ ከመጣ)
     if context.args:
-        store_id = context.args[0]
+        store_id = context.args[0].strip()
         store = get_store(store_id)
+
         if store:
             if store["user_id"] == user.id:
                 await update.message.reply_text("😊 ይሄ የራስዎ ሱቅ ነው።")
@@ -418,6 +418,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(t(lang, "no_store_found"))
             return
 
+    # 2. ነጋዴ ከሆነ የሱቁን ዳሽቦርድ ማውጫ ያሳየዋል
+    merchant_store = get_merchant_store(user.id)
     if merchant_store:
         await update.message.reply_text(
             f"👨‍🏪 እንኳን ደህና መጡ {user.first_name}!\n\n"
@@ -429,6 +431,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
+    # 3. Parameter ከሌለውና አዲስ ተጠቃሚ ከሆነ ሰላምታ መልእክት ይልካል
     await update.message.reply_text(t(lang, "start"))
 
 
@@ -899,448 +902,5 @@ async def dispute_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(t(lang, "dispute_reason"))
         return DISPUTE_REASON
 
-    await update.message.reply_text(
-        t(lang, "select_order"),
-        reply_markup=orders_keyboard(orders, "disp")
-    )
+    await update.message.reply_text(t(lang, "select_order"), reply_markup=orders_keyboard(orders, "dispute"))
     return DISPUTE_SELECT_ORDER
-
-
-async def dispute_select_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    lang = context.user_data.get("lang", "am")
-    order_id = query.data.replace("disp_", "")
-    order = get_order(order_id)
-    if not order:
-        await query.edit_message_text(t(lang, "error"))
-        return ConversationHandler.END
-    context.user_data["dispute_order"] = order
-    await query.edit_message_text(t(lang, "dispute_reason"))
-    return DISPUTE_REASON
-
-
-async def dispute_reason(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["dispute_reason_text"] = update.message.text
-    lang = context.user_data.get("lang", "am")
-    await update.message.reply_text(t(lang, "dispute_proof"))
-    return DISPUTE_PROOF
-
-
-async def dispute_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "am")
-    user = update.effective_user
-    order = context.user_data.get("dispute_order")
-    reason = context.user_data.get("dispute_reason_text", "")
-
-    proof_file_id = None
-    if update.message.photo:
-        proof_file_id = update.message.photo[-1].file_id
-
-    dispute = {
-        "dispute_id": f"disp_{uuid4().hex[:8]}",
-        "order_id": order["order_id"],
-        "customer_id": user.id,
-        "name": order.get("name"),
-        "phone": order.get("phone"),
-        "store": order.get("store", {}).get("store_name"),
-        "store_user_id": order.get("store", {}).get("user_id"),
-        "reason": reason,
-        "proof_file_id": proof_file_id,
-        "timestamp": datetime.now().isoformat(),
-    }
-    save_dispute(dispute)
-
-    if ADMIN_ID:
-        try:
-            admin_text = t(lang, "admin_dispute_notify",
-                            dispute_id=dispute["dispute_id"],
-                            order_id=dispute["order_id"],
-                            name=dispute["name"],
-                            phone=dispute["phone"],
-                            store=dispute["store"],
-                            reason=dispute["reason"])
-            await context.bot.send_message(ADMIN_ID, admin_text)
-            if proof_file_id:
-                await context.bot.send_photo(ADMIN_ID, photo=proof_file_id)
-        except Exception as e:
-            logger.error(f"❌ Admin notify error: {e}")
-
-    await update.message.reply_text(t(lang, "dispute_filed", dispute_id=dispute["dispute_id"]))
-
-    context.user_data.pop("dispute_order", None)
-    context.user_data.pop("dispute_reason_text", None)
-    return ConversationHandler.END
-
-
-# ====================== RATING FLOW ======================
-async def rate_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = context.user_data.get("lang", "am")
-    orders = get_orders_for_customer(user.id)
-
-    if not orders:
-        await update.message.reply_text(t(lang, "no_orders_for_user"))
-        return ConversationHandler.END
-
-    if len(orders) == 1:
-        context.user_data["rating_order"] = orders[0]
-        await update.message.reply_text(t(lang, "rating_prompt"))
-        return RATING_SCORE
-
-    await update.message.reply_text(
-        t(lang, "select_order"),
-        reply_markup=orders_keyboard(orders, "rate")
-    )
-    return RATING_SELECT_ORDER
-
-
-async def rate_select_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    lang = context.user_data.get("lang", "am")
-    order_id = query.data.replace("rate_", "")
-    order = get_order(order_id)
-    if not order:
-        await query.edit_message_text(t(lang, "error"))
-        return ConversationHandler.END
-    context.user_data["rating_order"] = order
-    await query.edit_message_text(t(lang, "rating_prompt"))
-    return RATING_SCORE
-
-
-async def rate_score(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "am")
-    try:
-        score = int(update.message.text.strip())
-        if score < 1 or score > 5:
-            raise ValueError
-    except ValueError:
-        await update.message.reply_text(t(lang, "invalid_rating"))
-        return RATING_SCORE
-
-    order = context.user_data.pop("rating_order")
-    store_id = order.get("store", {}).get("store_id")
-    save_rating(store_id, score)
-    avg, count = get_rating_stats(store_id)
-
-    await update.message.reply_text(t(lang, "rating_saved", avg=avg, count=count))
-    return ConversationHandler.END
-
-
-# ====================== CONTACT BOT OWNER ======================
-async def contact_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "am")
-    if not ADMIN_ID:
-        await update.message.reply_text(t(lang, "contact_unavailable"))
-        return ConversationHandler.END
-    await update.message.reply_text(t(lang, "contact_prompt"))
-    return CONTACT_MESSAGE
-
-
-async def contact_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "am")
-    user = update.effective_user
-    caption = update.message.text or update.message.caption or ""
-
-    try:
-        header = t(lang, "contact_admin_notify",
-                   name=user.first_name or "-", username=user.username or "-", user_id=user.id)
-        await context.bot.send_message(ADMIN_ID, header)
-        if update.message.photo:
-            await context.bot.send_photo(ADMIN_ID, photo=update.message.photo[-1].file_id, caption=caption)
-        elif caption:
-            await context.bot.send_message(ADMIN_ID, caption)
-    except Exception as e:
-        logger.error(f"❌ Contact-admin error: {e}")
-
-    await update.message.reply_text(t(lang, "contact_sent"))
-    return ConversationHandler.END
-
-
-# ====================== MERCHANT COMMANDS ======================
-async def cmd_dashboard(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = context.user_data.get("lang", "am")
-
-    merchant = get_merchant_store(user.id)
-    if not merchant:
-        await update.message.reply_text(t(lang, "no_store"))
-        return
-
-    orders = get_orders_for_store(merchant["store_id"])
-    revenue = sum(o.get("product", {}).get("price", 0) for o in orders
-                  if o.get("status") in ("paid_pending_confirmation", "cod_confirmed", "stars_paid", "delivered"))
-    avg, count = get_rating_stats(merchant["store_id"])
-
-    text = t(lang, "dashboard",
-             store=merchant["store_name"],
-             orders=len(orders),
-             revenue=revenue,
-             products=len(merchant.get("products", [])),
-             rating=avg,
-             rating_count=count)
-
-    await update.message.reply_text(text)
-
-
-async def cmd_mystore(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = context.user_data.get("lang", "am")
-
-    merchant = get_merchant_store(user.id)
-    if not merchant:
-        await update.message.reply_text(t(lang, "no_store"))
-        return
-
-    bot = await context.bot.get_me()
-    link = f"https://t.me/{bot.username}?start={merchant['store_id']}"
-    await update.message.reply_text(f"🔗 {link}")
-
-
-async def cmd_myorders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    lang = context.user_data.get("lang", "am")
-
-    merchant = get_merchant_store(user.id)
-    if not merchant:
-        await update.message.reply_text(t(lang, "no_store"))
-        return
-
-    orders = get_orders_for_store(merchant["store_id"])
-    if not orders:
-        await update.message.reply_text(t(lang, "no_orders"))
-        return
-
-    text = "📦 የቅርብ ጊዜ ትዕዛዞች:\n\n"
-    for i, order in enumerate(orders[-10:], 1):
-        text += (f"{i}. {order['product']['name']} ({order['product']['price']} ብር) "
-                 f"[{order.get('status', '')}]\n"
-                 f"   👤 {order['name']} 📞 {order['phone']}\n\n")
-
-    await update.message.reply_text(text)
-
-
-# ====================== ADMIN ======================
-def _is_admin(user_id):
-    return ADMIN_ID and user_id == ADMIN_ID
-
-
-async def cmd_admin_merchants(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not _is_admin(user.id):
-        return
-
-    merchants = get_all_merchants()
-    if not merchants:
-        await update.message.reply_text("📭 ነጋዴ የለም")
-        return
-
-    text = f"🏪 ጠቅላላ ነጋዴዎች: {len(merchants)}\n\n"
-    for m in merchants:
-        orders = get_orders_for_store(m["store_id"])
-        avg, count = get_rating_stats(m["store_id"])
-        text += (
-            f"🏪 {m['store_name']}\n"
-            f"   👤 @{m.get('username','')} (id: {m['user_id']})\n"
-            f"   📞 {m.get('phone','')}\n"
-            f"   📍 {m.get('location','')}\n"
-            f"   💳 {m.get('payment_method','')}\n"
-            f"   📦 ምርቶች: {len(m.get('products', []))}\n"
-            f"   🛍️ ትዕዛዞች: {len(orders)}\n"
-            f"   ⭐ {avg} ({count})\n\n"
-        )
-        if len(text) > 3500:
-            await update.message.reply_text(text)
-            text = ""
-    if text:
-        await update.message.reply_text(text)
-
-
-async def cmd_admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not _is_admin(user.id):
-        return
-
-    orders = get_all_orders()
-    if not orders:
-        await update.message.reply_text("📭 ትዕዛዝ የለም")
-        return
-
-    text = f"🛍️ ጠቅላላ ትዕዛዞች: {len(orders)}\n\n"
-    for o in orders[-20:]:
-        text += (
-            f"🆔 {o['order_id']}  [{o.get('status','')}]\n"
-            f"   🏪 {o.get('store', {}).get('store_name','')}\n"
-            f"   👤 ደንበኛ: {o.get('name','')} 📞 {o.get('phone','')} (id: {o.get('customer_id','')})\n"
-            f"   📦 {o.get('product', {}).get('name','')} - {o.get('product', {}).get('price','')} ብር\n\n"
-        )
-        if len(text) > 3500:
-            await update.message.reply_text(text)
-            text = ""
-    if text:
-        await update.message.reply_text(text)
-
-
-async def cmd_admin_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    if not _is_admin(user.id):
-        return
-    await update.message.reply_text(
-        "👨‍⚖️ Admin Commands:\n\n"
-        "/admin_merchants - ሁሉንም ነጋዴዎች አሳይ\n"
-        "/admin_orders - ሁሉንም ትዕዛዞች አሳይ"
-    )
-
-
-# ====================== CANCEL FALLBACK ======================
-async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    lang = context.user_data.get("lang", "am")
-    await update.message.reply_text(t(lang, "cancelled"))
-    return ConversationHandler.END
-
-
-# ====================== MAIN ======================
-async def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    register_conv = ConversationHandler(
-        entry_points=[CommandHandler("register", reg_start)],
-        states={
-            REG_STORE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_name)],
-            REG_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_phone)],
-            REG_LOCATION: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_location)],
-            REG_PAYMENT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_payment)],
-            REG_PRODUCT: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_product)],
-            REG_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, reg_price)],
-            REG_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, reg_photo)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    addproduct_conv = ConversationHandler(
-        entry_points=[CommandHandler("addproduct", addproduct_start)],
-        states={
-            REG_PRODUCT: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_name)],
-            REG_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, addproduct_price)],
-            REG_PHOTO: [MessageHandler((filters.PHOTO | filters.TEXT) & ~filters.COMMAND, addproduct_photo)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    order_conv = ConversationHandler(
-        entry_points=[CallbackQueryHandler(select_product, pattern="^prod_")],
-        states={
-            ORDER_GET_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_name)],
-            ORDER_GET_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_phone)],
-            ORDER_GET_ADDRESS: [MessageHandler(filters.TEXT & ~filters.COMMAND, order_get_address)],
-            ORDER_CONFIRM: [CallbackQueryHandler(order_confirm_callback, pattern="^order_")],
-            ORDER_PAYMENT_METHOD: [CallbackQueryHandler(order_payment_method_callback, pattern="^pay_")],
-            ORDER_PAYMENT_PROOF: [
-                MessageHandler(filters.PHOTO, order_payment_proof),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, order_payment_proof),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    dispute_conv = ConversationHandler(
-        entry_points=[CommandHandler("dispute", dispute_start)],
-        states={
-            DISPUTE_SELECT_ORDER: [CallbackQueryHandler(dispute_select_order, pattern="^disp_")],
-            DISPUTE_REASON: [MessageHandler(filters.TEXT & ~filters.COMMAND, dispute_reason)],
-            DISPUTE_PROOF: [
-                MessageHandler(filters.PHOTO, dispute_proof),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, dispute_proof),
-            ],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    rate_conv = ConversationHandler(
-        entry_points=[CommandHandler("rate", rate_start)],
-        states={
-            RATING_SELECT_ORDER: [CallbackQueryHandler(rate_select_order, pattern="^rate_")],
-            RATING_SCORE: [MessageHandler(filters.TEXT & ~filters.COMMAND, rate_score)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    contact_conv = ConversationHandler(
-        entry_points=[CommandHandler("contact", contact_start)],
-        states={
-            CONTACT_MESSAGE: [MessageHandler((filters.TEXT | filters.PHOTO) & ~filters.COMMAND, contact_message)],
-        },
-        fallbacks=[CommandHandler("cancel", cancel)],
-        per_message=False,
-    )
-
-    # Core commands
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help", cmd_help))
-    app.add_handler(CommandHandler("dashboard", cmd_dashboard))
-    app.add_handler(CommandHandler("mystore", cmd_mystore))
-    app.add_handler(CommandHandler("myorders", cmd_myorders))
-    app.add_handler(CommandHandler("received", cmd_received))
-
-    # Admin
-    app.add_handler(CommandHandler("admin_merchants", cmd_admin_merchants))
-    app.add_handler(CommandHandler("admin_orders", cmd_admin_orders))
-    app.add_handler(CommandHandler("admin_help", cmd_admin_help))
-
-    # Conversations
-    app.add_handler(register_conv)
-    app.add_handler(addproduct_conv)
-    app.add_handler(order_conv)
-    app.add_handler(dispute_conv)
-    app.add_handler(rate_conv)
-    app.add_handler(contact_conv)
-
-    # Standalone callback for /received selection list
-    app.add_handler(CallbackQueryHandler(received_callback, pattern="^received_"))
-
-    # Telegram Stars payment flow
-    app.add_handler(PreCheckoutQueryHandler(precheckout_callback))
-    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_callback))
-
-    if RENDER_EXTERNAL_URL:
-        logger.info("🌐 Starting webhook mode")
-        async with app:
-            await app.bot.set_webhook(url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}")
-            await app.start()
-            try:
-                await app.updater.start_webhook(
-                    listen="0.0.0.0",
-                    port=PORT,
-                    url_path=BOT_TOKEN,
-                    webhook_url=f"{RENDER_EXTERNAL_URL}/{BOT_TOKEN}"
-                )
-                logger.info("✅ Bot running (webhook mode)")
-                await asyncio.Event().wait()
-            finally:
-                await app.stop()
-    else:
-        logger.info("📱 Starting polling mode")
-        async with app:
-            await app.start()
-            try:
-                await app.updater.start_polling()
-                logger.info("✅ Bot running (polling mode)")
-                await asyncio.Event().wait()
-            finally:
-                await app.stop()
-
-
-if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logger.info("⏹️ Bot stopped")
-    except Exception as e:
-        logger.error(f"💥 Fatal error: {e}", exc_info=True)
-        raise
