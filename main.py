@@ -200,7 +200,17 @@ TEXTS = {
 
         "dispute_reason": "❌ ምን ችግር አጋጠመዎት? (በዝርዝር ይግለጹ)",
         "dispute_proof": "📸 ካለ ማስረጃ (ፎቶ) ይላኩ፣ ከሌለ 'የለም' ብለው ይጻፉ",
-        "dispute_filed": "⚠️ ቅሬታዎ ደርሷል!\n\n🆔 የቅሬታ ቁጥር: {dispute_id}\n👨‍⚖️ አስተዳዳሪው በቅርቡ ያነጋግርዎታል።",
+        "dispute_filed": "⚠️ ቅሬታዎ ደርሷል!\n\n🆔 የቅሬታ ቁጥር: {dispute_id}\n👨‍⚖️ ነጋዴው/አስተዳዳሪው በቅርቡ ያነጋግርዎታል።",
+        "merchant_dispute_notify": """🚨 ደንበኛ ቅሬታ አቅርቧል!
+
+🆔 {dispute_id}
+📦 ትዕዛዝ: {order_id}
+👤 ደንበኛ: {name} ({phone})
+
+❌ ምክንያት:
+{reason}
+
+እባክዎ በተቻለ ፍጥነት ደንበኛውን ያነጋግሩ / ችግሩን ይፍቱ።""",
         "admin_dispute_notify": """🚨 አዲስ ቅሬታ!
 
 🆔 {dispute_id}
@@ -937,6 +947,25 @@ async def dispute_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_dispute(dispute)
 
+    # Always try to reach the merchant directly — this must not depend on
+    # ADMIN_ID being configured, since the merchant is the one who can
+    # actually resolve the order.
+    store_user_id = dispute.get("store_user_id")
+    if store_user_id:
+        try:
+            merchant_text = t(lang, "merchant_dispute_notify",
+                               dispute_id=dispute["dispute_id"],
+                               order_id=dispute["order_id"],
+                               name=dispute["name"],
+                               phone=dispute["phone"],
+                               reason=dispute["reason"])
+            await context.bot.send_message(store_user_id, merchant_text)
+            if proof_file_id:
+                await context.bot.send_photo(store_user_id, photo=proof_file_id)
+        except Exception as e:
+            logger.error(f"❌ Merchant notify error: {e}")
+
+    # Also notify the bot owner/admin, if configured, for oversight.
     if ADMIN_ID:
         try:
             admin_text = t(lang, "admin_dispute_notify",
