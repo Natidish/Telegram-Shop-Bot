@@ -104,7 +104,7 @@
 
 ---
 
-## 🔑 ክፍል 4: ትዕዛዞች ማጠቃለያ (Command Cheat Sheet)
+## 🔑 ክፍል 3: ትዕዛዞች ማጠቃለያ (Command Cheat Sheet)
 
 **ለነጋዴ ብቻ**
 - `/register` — ሱቅ ክፈት
@@ -129,18 +129,9 @@
 
 ---
 
-## ⚙️ ክፍል 5: ለቦቱ ባለቤት (Technical Owner) ማወቅ ያለብዎት
-
-- ዳታ (ሱቆች፣ ትዕዛዞች፣ ደረጃዎች) የሚቀመጠው `bot_data/` ፎልደር ውስጥ JSON ፋይሎች ላይ ነው። ምንም database አያስፈልግም።
-- ⚠️ Render free tier disk **ጊዜያዊ** ስለሆነ፣ ቦቱ redeploy/restart በተደረገ ቁጥር ዳታው ይጠፋል። ለቋሚ ንግድ ስራ database (እንደ Supabase) መጠቀም ይመከራል።
-- `ADMIN_ID` የተባለውን environment variable በ Render → Environment ውስጥ ካስቀመጡ (የራስዎ Telegram numeric user ID)፣ የ`/admin_*` ትዕዛዞችን መጠቀም ይችላሉ እና ለተጨማሪ ክትትል የ dispute/contact መልእክቶች ቅጂ ይደርስዎታል። የራስዎን Telegram ID ለማወቅ @userinfobot ን ቦት ላይ ያናግሩ።
-- `STARS_RATE` የተባለ environment variable (ነባሪ 1) የብር-ወደ-Stars ምንዛሪን ይቆጣጠራል።
-
----
-
 💡 **ጠቃሚ ምክር ለነጋዴዎች**፦ ትክክለኛ እና ግልጽ የምርት ፎቶ ማስቀመጥ ደንበኛ በፍጥነት እንዲወስን ይረዳል። ዋጋዎችን ወቅታዊ ለማድረግ ካስፈለገ በአሁኑ ጊዜ አዲስ ምርት ብቻ መጨመር ይቻላል (የነባር ምርት ዋጋ ማስተካከል ካስፈለገ ይንገሩኝ፣ ተጨማሪ ትዕዛዝ (`/editproduct`) ልጨምርልዎት እችላለሁ)።
 
-## 6. ቀጣይ ሊጨመሩ የሚችሉ ፊቸሮች
+## 5. ቀጣይ ሊጨመሩ የሚችሉ ፊቸሮች
 - 💳 Chapa payment integration (ትዕዛዝ ላይ ቀጥታ ክፍያ)
 - 📊 ለነጋዴ ቀላል dashboard (web ላይ ሽያጭ ቁጥር ለማየት)
 - 🔔 Broadcast — ነጋዴ ለሁሉም ደንበኞቹ በቀጥታ ማስታወቂያ መላክ
